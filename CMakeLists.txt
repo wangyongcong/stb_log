@@ -1,6 +1,10 @@
 PROJECT(stb_log)
 
-add_definitions(-DSTB_LOG_IMPLEMENTATION -DUSE_NAMESPACE)
+add_definitions(-DUSE_NAMESPACE)
+
+if(MSVC)
+	add_definitions("/Wall /WX /D_CRT_SECURE_NO_WARNINGS")
+endif()
 
 SET(source
 	stb_log.h
