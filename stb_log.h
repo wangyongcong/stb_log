@@ -5,13 +5,9 @@
 #ifndef INCLUDE_STB_LOG_H
 #define INCLUDE_STB_LOG_H
 
-#include <cstdlib>
 #include <cassert>
 #include <vector>
 #include <atomic>
-#include <thread>
-#include <new>
-#include <emmintrin.h>
 
 #ifdef USE_NAMESPACE
 namespace wyc {
@@ -80,45 +76,36 @@ namespace wyc {
 	struct LogEvent
 	{
 		int level;
-		int size;
 		char channel[16];
+		unsigned capacity;
 		union {
-			void *data;
+			void *buffer;
 			char fixed_buffer[1];
 		};
 		Sequence publish;
 	};
-	constexpr unsigned log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, data);
+	constexpr unsigned log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
 
-	class ILogFilter
-	{
-	public:
-		virtual ~ILogFilter() {}
-	};
+	typedef bool (*LogFilter)(const LogEvent*);
 
 	class CLogger;
 
-	class ILogHandler
+	class CLogHandler
 	{
 	public:
 		static void* operator new(size_t size) {
-			return aligned_alloc(alignof(ILogHandler), size);
+			return aligned_alloc(alignof(CLogHandler), size);
 		}
 		static void operator delete(void *ptr) {
 			aligned_free(ptr);
 		}
 
-		ILogHandler()
-			: m_logger(nullptr)
-			, m_filter_list(nullptr)
-		{
-			ASSERT_ALIGNMENT(this, CACHELINE_SIZE);
-			ASSERT_ALIGNMENT(&m_seq, CACHELINE_SIZE);
-			m_seq.set(0);
-		}
-		virtual ~ILogHandler() {}
+		CLogHandler();
+		virtual ~CLogHandler();
+		void process();
+		virtual void process_event(const LogEvent *log) {};
 
-		inline void follow(const CLogger *seq) {
+		inline void follow(CLogger *seq) {
 			m_logger = seq;
 		}
 		inline uint64_t get_sequence() const {
@@ -127,33 +114,49 @@ namespace wyc {
 		inline uint64_t acquire_sequence() const {
 			return m_seq.load();
 		}
-
-		void process();
-		virtual void process_event(const LogEvent *log) = 0;
+		inline void add_filter(LogFilter filter) {
+			m_filters.push_back(filter);
+		}
 
 	private:
-		const CLogger* m_logger;
-		ILogFilter *m_filter_list;
+		CLogger* m_logger;
+		std::vector<LogFilter> m_filters;
 		Sequence m_seq;
 	};
+
+	class CLogStdout : public CLogHandler 
+	{
+	public:
+		virtual void process_event(const LogEvent *log) override;
+	};
+
+	class CLogFile : public CLogHandler
+	{
+	public:
+		virtual void process_event(const LogEvent *log) override;
+	};
+
+#if defined(_WIN32) || defined(_WIN64)
+#ifdef _MSC_VER 
+	class CLogDebugWindow : public CLogHandler
+	{
+	public:
+		virtual void process_event(const LogEvent *log) override;
+	};
+#endif
+#endif
 
 	class CLogger
 	{
 	public:
-		static void* operator new(size_t size) {
-			return aligned_alloc(alignof(CLogger), size);
-		}
-		static void operator delete(void *ptr) {
-			aligned_free(ptr);
-		}
-
 		CLogger(size_t buf_size);
 		~CLogger();
 		CLogger(const CLogger&) = delete;
 		CLogger& operator = (const CLogger&) = delete;
-		void write(int level, const char* channel, const void *data, size_t size);
-		void add_handler(ILogHandler *handler);
-		void remove_handler(ILogHandler *handler);
+		void write(int level, const void *data, size_t size);
+		void write(int level, const char* channel, const char *format, ...);
+		void add_handler(CLogHandler *handler);
+		void remove_handler(CLogHandler *handler);
 		const LogEvent* get_event(uint64_t seq) const {
 			return m_event_queue + (seq & m_size_mask);
 		}
@@ -161,29 +164,42 @@ namespace wyc {
 			return m_event_queue + (seq & m_size_mask);
 		}
 		
+		static void* operator new(size_t size) {
+			return aligned_alloc(alignof(CLogger), size);
+		}
+		static void operator delete(void *ptr) {
+			aligned_free(ptr);
+		}
+		static size_t get_next_power2(size_t size);
+		static char* ensure_buffer(LogEvent *log, size_t size);
+
 	private:
+		uint64_t _claim(uint64_t count);
+		
 		LogEvent * m_event_queue;
 		unsigned m_size_mask;
-		std::vector<ILogHandler*> m_handler_list;
+		std::vector<CLogHandler*> m_handler_list;
 		uint64_t m_min_seq;
 		Sequence m_seq_claim;
-
-		uint64_t _claim(uint64_t count);
 	};
 
 #ifdef USE_NAMESPACE
 }
 #endif
-
 #endif // NCLUDE_STB_LOG_H
 
 #ifdef STB_LOG_IMPLEMENTATION
+
+#include <stdarg.h>
+#include <emmintrin.h>
+#include <thread>
+#include <new>
 
 #ifdef USE_NAMESPACE
 namespace wyc {
 #endif
 
-	inline size_t get_next_power2(size_t val)
+	size_t CLogger::get_next_power2(size_t val)
 	{
 		// val maybe power of 2
 		--val;
@@ -203,6 +219,10 @@ namespace wyc {
 		return val;
 	}
 
+	// --------------------------------
+	// CLogger implementation
+	// --------------------------------
+
 	CLogger::CLogger(size_t size)
 	{
 		assert(size > 0);
@@ -218,7 +238,7 @@ namespace wyc {
 			ASSERT_ALIGNMENT(log, CACHELINE_SIZE);
 			ASSERT_ALIGNMENT(&log->publish, CACHELINE_SIZE);
 			// initialize LogEvent
-			log->size = 0;
+			log->capacity = log_event_fixed_buffer_size;
 			log->publish.set(0);
 		}
 		m_seq_claim.set(0);
@@ -227,30 +247,65 @@ namespace wyc {
 
 	CLogger::~CLogger()
 	{
+		for (auto handler : m_handler_list)
+		{
+			handler->follow(nullptr);
+		}
 		for (size_t i = 0; i <= m_size_mask; ++i) {
 			// clean up LogEvent
 			LogEvent *log = &m_event_queue[i];
-			if (log->data) {
-				//delete log->data;
-				log->data = nullptr;
+			if (log->capacity > log_event_fixed_buffer_size) {
+				delete[] log->buffer;
 			}
 		}
 		aligned_free(m_event_queue);
 		m_event_queue = nullptr;
 	}
 
-	void CLogger::write(int level, const char* channel, const void *data, size_t size)
+	void CLogger::write(int level, const void *data, size_t size)
 	{
 		uint64_t seq = _claim(1);
-		// write event data
+		// write header
 		LogEvent *log = get_event(seq);
 		log->level = level;
-		unsigned last = sizeof(log->channel) - 1;
-		strncpy(log->channel, channel, last);
-		log->channel[last] = 0;
-		assert(size < log_event_fixed_buffer_size);
-		memcpy(&log->fixed_buffer, data, size);
-		log->size = size;
+		log->channel[0] = 0;
+		// write data
+		char *buf = ensure_buffer(log, size);
+		memcpy(buf, data, size);
+		// publish event
+		log->publish.store(seq + 1);
+	}
+
+	void CLogger::write(int level, const char * channel, const char * format, ...)
+	{
+		va_list args;
+		va_start(args, format);
+		int length = vsnprintf(0, 0, format, args);
+		va_end(args);
+		if (length <= 0)
+			return;
+		uint64_t seq = _claim(1);
+		// write header
+		LogEvent *log = get_event(seq);
+		log->level = level;
+		constexpr unsigned channel_size = sizeof(log->channel) - 1;
+		if (strlen(channel) <= channel_size)
+			strcpy(log->channel, channel);
+		else {
+			strncpy(log->channel, channel, channel_size);
+			log->channel[channel_size] = 0;
+		}
+		// write data
+		char *buf = ensure_buffer(log, length + 1);
+		va_start(args, format);
+		length = vsnprintf(buf, log->capacity, format, args);
+		va_end(args);
+		if (length == -1) {
+			log->level = StbLogLevel::ERROR;
+			const char *err = "Logging fail";
+			buf = ensure_buffer(log, strlen(err) + 1);
+			strcpy(buf, err);
+		}
 		// publish event
 		log->publish.store(seq + 1);
 	}
@@ -260,8 +315,8 @@ namespace wyc {
 		uint64_t request_seq = m_seq_claim.fetch_add(count);
 		if (request_seq < m_min_seq)
 			return request_seq;
-		uint64_t min_seq = ULLONG_MAX, seq;
-		for (ILogHandler *handler : m_handler_list) {
+		uint64_t min_seq = ULLONG_MAX, seq = 0;
+		for (CLogHandler *handler : m_handler_list) {
 			seq = handler->get_sequence();
 			while (request_seq > seq + m_size_mask) {
 				_mm_pause(); // pause, about 12ns
@@ -281,13 +336,28 @@ namespace wyc {
 		return request_seq;
 	}
 
-	void CLogger::add_handler(ILogHandler * handler)
+	char * CLogger::ensure_buffer(LogEvent * log, size_t size)
+	{
+		if (log->capacity < size) {
+			if (log->capacity > log_event_fixed_buffer_size) {
+				delete[] log->buffer;
+			}
+			if (size < 256 && (size & (size - 1)) != 0) {
+				size = get_next_power2(size);
+			}
+			log->buffer = new char[size];
+			log->capacity = size;
+		}
+		return log->capacity > log_event_fixed_buffer_size ? (char*)log->buffer : log->fixed_buffer;
+	}
+
+	void CLogger::add_handler(CLogHandler * handler)
 	{
 		m_handler_list.push_back(handler);
 		handler->follow(this);
 	}
 
-	void CLogger::remove_handler(ILogHandler * handler)
+	void CLogger::remove_handler(CLogHandler * handler)
 	{
 		for (auto iter = m_handler_list.begin(); iter != m_handler_list.end(); ++iter) {
 			if (*iter == handler)
@@ -299,7 +369,26 @@ namespace wyc {
 		}
 	}
 
-	void ILogHandler::process() 
+	// --------------------------------
+	// CLogHandler implementation
+	// --------------------------------
+
+	CLogHandler::CLogHandler()
+		: m_logger(nullptr)
+	{
+		ASSERT_ALIGNMENT(this, CACHELINE_SIZE);
+		ASSERT_ALIGNMENT(&m_seq, CACHELINE_SIZE);
+		m_seq.set(0);
+	}
+
+	CLogHandler::~CLogHandler()
+	{
+		if (m_logger) {
+			m_logger->remove_handler(this);
+		}
+	}
+	
+	void CLogHandler::process() 
 	{
 		assert(m_logger);
 		uint64_t seq = m_seq.get(), pub;
@@ -308,7 +397,15 @@ namespace wyc {
 			log = m_logger->get_event(seq);
 			pub = log->publish.load();
 			if (pub > seq) {
-				process_event(log);
+				bool b = true;
+				for (auto filter : m_filters) {
+					if (!filter(log)) {
+						b = false;
+						break;
+					}
+				}
+				if(b)
+					process_event(log);
 				m_seq.store(pub);
 				seq += 1;
 				assert(pub == seq);
@@ -321,5 +418,4 @@ namespace wyc {
 #ifdef USE_NAMESPACE
 }
 #endif
-
 #endif // STB_LOG_IMPLEMENTATION

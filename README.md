@@ -1,12 +1,28 @@
 # stb_log
 Single file async logging library for C++, inspired by [nothings/stb](https://github.com/nothings/stb).
 
-Feature:
-1. Implemented with C++11 standard library. No 3rd dependence.
-2. Lock-free async logging. Writing and handling log message in any threads.
-3. Use high performance [LMAX Disruptor](https://github.com/LMAX-Exchange/disruptor) model.
+## Feature
 
-More todo:
-1. Log message filtering.
-2. Compile time filtering with macro interface.
-3. Message formatting.
+1. Single header file library.
+2. Rely on C++11 standard library only.
+3. Lock-free async logging. Write and handl log message in any threads.
+4. Use high performance [LMAX Disruptor](https://github.com/LMAX-Exchange/disruptor) pattern.
+
+## More to do
+
+- [x] Log Message formatting.
+- [x] Log message filtering.
+- [ ] Console logger.
+- [ ] File logger.
+- [ ] Log file rotation.
+- [ ] Preprocess macro with compile time filtering.
+
+## Usage
+```C++
+// include the implementation in one C++ module
+#define STB_LOG_IMPLEMENT
+#include "stb_log.h"
+
+// then include the header anywhere that need it
+#include "stb_log.h"
+```

@@ -6,33 +6,28 @@
 
 using namespace wyc;
 
-class CLogWriter: public ILogHandler
+class CLogWriter: public CLogHandler
 {
 public:
-	CLogWriter(int max_size, unsigned level, std::atomic<int> *counter)
-		: m_level(level)
-		, m_counter(counter)
+	CLogWriter(int max_size, std::atomic<unsigned> *counter)
+		: m_counter(counter)
 	{
 		m_logs.reserve(max_size);
 	}
 
 	virtual void process_event(const LogEvent *log) override
 	{
-		if (m_level == log->level)
-		{
-			m_logs.push_back(*(int*)(log->fixed_buffer));
-			m_counter->fetch_sub(1, std::memory_order::memory_order_relaxed);
-		}
+		m_logs.push_back(*(int*)(log->fixed_buffer));
+		m_counter->fetch_sub(1, std::memory_order::memory_order_relaxed);
 	}
 
-	inline std::vector<unsigned> get_logs() {
+	inline std::vector<unsigned>& get_logs() {
 		return m_logs;
 	}
 
 private:
-	unsigned m_level;
 	std::vector<unsigned> m_logs;
-	std::atomic<int> *m_counter;
+	std::atomic<unsigned> *m_counter;
 };
 
 void common_test()
@@ -41,27 +36,30 @@ void common_test()
 	printf("core: %d\n", std::thread::hardware_concurrency());
 
 	constexpr int channel_count = 2;
-	const char* channel_name[channel_count] = {
-		"C1", "C2"
-	};
 	const StbLogLevel channel_level[channel_count] = {
 		StbLogLevel::DEBUG,
 		StbLogLevel::INFO,
 	};
 	constexpr int max_write_count = 100000;
 
-	alignas(CACHELINE_SIZE) std::atomic<int> ch1_counter = 1;
-	alignas(CACHELINE_SIZE) std::atomic<int> ch2_counter = 1;
-	alignas(CACHELINE_SIZE) std::atomic<int> max_read_count = max_write_count * 2;
+	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch1_counter = 1;
+	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch2_counter = 1;
+	alignas(CACHELINE_SIZE) std::atomic<unsigned> max_read_count = max_write_count * 2;
 
-	std::atomic<int> *channel_counter[channel_count] = {
+	std::atomic<unsigned> *channel_counter[channel_count] = {
 		&ch1_counter, &ch2_counter
 	};
 
+	CLogWriter *h1 = new CLogWriter(max_write_count, &max_read_count);
+	h1->add_filter([](const LogEvent* log) -> bool {
+		return log->level == StbLogLevel::DEBUG;
+	});
+	CLogWriter *h2 = new CLogWriter(max_write_count, &max_read_count);
+	h2->add_filter([](const LogEvent* log) -> bool {
+		return log->level == StbLogLevel::INFO;
+	});
 	CLogger *logger = new CLogger(256);
-	CLogWriter *h1 = new CLogWriter(max_write_count, channel_level[0], &max_read_count);
 	logger->add_handler(h1);
-	CLogWriter *h2 = new CLogWriter(max_write_count, channel_level[1], &max_read_count);
 	logger->add_handler(h2);
 
 	std::thread t1([&] {
@@ -84,7 +82,7 @@ void common_test()
 		{
 			auto i = random() % channel_count;
 			auto c = channel_counter[i]->fetch_add(1, std::memory_order::memory_order_relaxed);
-			logger->write(channel_level[i], channel_name[i], &c, sizeof(c));
+			logger->write(channel_level[i], &c, sizeof(c));
 		}
 	});
 
@@ -94,7 +92,7 @@ void common_test()
 		{
 			auto i = random() % channel_count;
 			auto c = channel_counter[i]->fetch_add(1, std::memory_order::memory_order_relaxed);
-			logger->write(channel_level[i], channel_name[i], &c, sizeof(c));
+			logger->write(channel_level[i], &c, sizeof(c));
 		}
 	});
 
@@ -124,8 +122,6 @@ void common_test()
 	}
 
 	// clear up
-	logger->remove_handler(h1);
-	logger->remove_handler(h2);
 	delete h1;
 	delete h2;
 	delete logger;
