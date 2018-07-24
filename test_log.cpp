@@ -37,8 +37,8 @@ void thread_test()
 
 	constexpr int channel_count = 2;
 	const StbLogLevel channel_level[channel_count] = {
-		StbLogLevel::DEBUG,
-		StbLogLevel::INFO,
+		LOG_DEBUG,
+		LOG_INFO,
 	};
 	constexpr int max_write_count = 100000;
 
@@ -52,31 +52,31 @@ void thread_test()
 
 	CLogWriter *h1 = new CLogWriter(max_write_count, &max_read_count);
 	h1->add_filter([](const LogEvent* log) -> bool {
-		return log->level == StbLogLevel::DEBUG;
+		return log->level == LOG_DEBUG;
 	});
 	CLogWriter *h2 = new CLogWriter(max_write_count, &max_read_count);
 	h2->add_filter([](const LogEvent* log) -> bool {
-		return log->level == StbLogLevel::INFO;
+		return log->level == LOG_INFO;
 	});
 	CLogger *logger = new CLogger(256);
 	logger->add_handler(h1);
 	logger->add_handler(h2);
 
-	std::thread t1([&] {
+	std::thread th1([&] {
 		while (max_read_count > 0) {
 			h1->process();
 			std::this_thread::yield();
 		}
 	});
 
-	std::thread t2([&] {
+	std::thread th2([&] {
 		while (max_read_count > 0) {
 			h2->process();
 			std::this_thread::yield();
 		}
 	});
 
-	std::thread t3([&] {
+	std::thread th3([&] {
 		std::mt19937 random((unsigned)time(NULL));
 		for(int cnt=0; cnt < max_write_count; ++cnt)
 		{
@@ -86,7 +86,7 @@ void thread_test()
 		}
 	});
 
-	std::thread t4([&] {
+	std::thread th4([&] {
 		std::mt19937 random((unsigned)time(NULL));
 		for (int cnt = 0; cnt < max_write_count; ++cnt)
 		{
@@ -97,10 +97,10 @@ void thread_test()
 	});
 
 	printf("please wait...\n");
-	t1.join();
-	t2.join();
-	t3.join();
-	t4.join();
+	th1.join();
+	th2.join();
+	th3.join();
+	th4.join();
 	
 	// validation
 	printf("validate result...\n");
@@ -132,30 +132,70 @@ void common_test()
 {
 	printf("stb_log common test\n");
 	CLogger *logger = new CLogger(256);
-	CLogStdout *handler = new CLogStdout();
-	logger->add_handler(handler);
-	std::atomic<bool> is_end = false;
+	CLogHandler *handlers[] = {
+		new CLogStdout(),
+		new CLogDebugWindow(),
+	};
+	for (auto h: handlers)
+		logger->add_handler(h);
 
-	std::thread h1([&] {
-		while (!handler->is_closed()) {
-			handler->process();
+	std::thread th1([&] {
+		while (!handlers[0]->is_closed()) {
+			handlers[0]->process();
 			std::this_thread::yield();
 		}
 	});
 
-	logger->write(0, "DEBUG", "hello, world");
-	logger->close();
-	h1.join();
+	std::thread th2([&] {
+		while (!handlers[1]->is_closed()) {
+			handlers[1]->process();
+			std::this_thread::yield();
+		}
+	});
 
+	logger->write(LOG_DEBUG, "DEBUG", "hello, world");
+	logger->write(LOG_INFO, "INFO", "common message");
+	logger->write(LOG_WARNING, "WARNING", "it's a warning");
+	logger->write(LOG_ERROR, "ERROR", "it's an error");
+	logger->write(LOG_CRITICAL, "CRITICAL", "fatal error!");
+	
+	// close and exit
+	logger->close();
+	th1.join();
+	th2.join();
+	
+	// cleanup up
+	for (auto h : handlers)
+		delete h;
 	delete logger;
-	delete handler;
+	printf("Success\n");
+}
+
+void file_rotate_test()
+{
+	printf("stb_log file rotate test\n");
+	CLogFile *h = new CLogFile("logs/exception/test.log");
+	assert(h->get_base_name() == "test.log");
+#if defined(_WIN32) || defined(_WIN64)
+	assert(h->get_directory() == "logs\\exception\\");
+#else
+	assert(h->get_directory() == "logs/exception/");
+#endif
+	h->rotate();
+	h->rotate();
+	h->rotate();
+	h->rotate();
+	h->rotate();
+
+	delete h;
 	printf("Success\n");
 }
 
 int main(int args, char *argv[])
 {
 	//thread_test();
-	common_test();
+	//common_test();
+	file_rotate_test();
 	getchar();
 	return 0;
 }

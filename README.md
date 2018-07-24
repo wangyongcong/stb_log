@@ -8,14 +8,20 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 3. Lock-free async logging. Write and handl log message in any threads.
 4. Use high performance [LMAX Disruptor](https://github.com/LMAX-Exchange/disruptor) pattern.
 
+## Platform
+- [x] Windows
+- [ ] Linux
+- [ ] MacOS
+
 ## More to do
 
 - [x] Log Message formatting.
 - [x] Log message filtering.
 - [x] Logging to standard output.
+- [x] Logging to Visual Studio debugger output.
 - [ ] Logging to file.
 - [ ] Log file rotation.
-- [ ] Preprocess macro with compile time filtering.
+- [ ] Helper macro with compile time filtering.
 
 ## Usage
 ```C++
