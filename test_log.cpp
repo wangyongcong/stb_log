@@ -4,7 +4,9 @@
 #define STB_LOG_IMPLEMENTATION
 #include "stb_log.h"
 
-using namespace wyc;
+#ifdef USE_NAMESPACE
+using STB_LOG_NAMESPACE;
+#endif
 
 class CLogWriter: public CLogHandler
 {
@@ -135,9 +137,12 @@ void common_test()
 	CLogHandler *handlers[] = {
 		new CLogStdout(),
 		new CLogDebugWindow(),
+		new CLogFile("log/test.log"),
 	};
 	for (auto h: handlers)
 		logger->add_handler(h);
+	handlers[0]->set_time_formatter(std::make_unique<CMsTimeFormatter>());
+	handlers[2]->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 
 	std::thread th1([&] {
 		while (!handlers[0]->is_closed()) {
@@ -153,16 +158,29 @@ void common_test()
 		}
 	});
 
+	std::thread th3([&] {
+		while (!handlers[2]->is_closed()) {
+			handlers[2]->process();
+			std::this_thread::yield();
+		}
+	});
+
 	logger->write(LOG_DEBUG, "DEBUG", "hello, world");
 	logger->write(LOG_INFO, "INFO", "common message");
 	logger->write(LOG_WARNING, "WARNING", "it's a warning");
 	logger->write(LOG_ERROR, "ERROR", "it's an error");
 	logger->write(LOG_CRITICAL, "CRITICAL", "fatal error!");
-	
+
+	for (int i = 0; i < 1000; ++i) {
+		logger->write(LOG_INFO, "TEST", "message[%d]", i);
+	}
+	logger->write(LOG_INFO, "TEST", "END");
+
 	// close and exit
 	logger->close();
 	th1.join();
 	th2.join();
+	th3.join();
 	
 	// cleanup up
 	for (auto h : handlers)
@@ -194,8 +212,8 @@ void file_rotate_test()
 int main(int args, char *argv[])
 {
 	//thread_test();
-	//common_test();
-	file_rotate_test();
+	common_test();
+	//file_rotate_test();
 	getchar();
 	return 0;
 }

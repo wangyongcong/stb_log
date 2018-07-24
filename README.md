@@ -13,15 +13,14 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 - [ ] Linux
 - [ ] MacOS
 
-## More to do
-
-- [x] Log Message formatting.
+## TODO
 - [x] Log message filtering.
+- [x] Log time stamp formatting.
 - [x] Logging to standard output.
+- [x] Logging to file.
 - [x] Logging to Visual Studio debugger output.
-- [ ] Logging to file.
-- [ ] Log file rotation.
-- [ ] Helper macro with compile time filtering.
+- [x] Log file rotation.
+- [ ] Helper interface and macro.
 
 ## Usage
 ```C++

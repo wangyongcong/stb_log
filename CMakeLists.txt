@@ -6,7 +6,7 @@ set(NAMESPACE_NAME "" CACHE STRING "Wrap log apis with namespace")
 
 if(NOT NAMESPACE_NAME STREQUAL "")
 	message(STATUS "use namespace ${NAMESPACE_NAME}")
-	add_definitions("-DUSE_NAMESPACE -DNAMESPACE_NAME=\"${NAMESPACE_NAME}\"")
+	add_definitions("-DUSE_NAMESPACE -DSTB_LOG_NAMESPACE=\"namespace ${NAMESPACE_NAME}\"")
 endif()
 
 if(MSVC)

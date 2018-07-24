@@ -9,13 +9,14 @@
 #include <vector>
 #include <atomic>
 #include <chrono>
+#include <memory>
 
-#ifndef NAMESPACE_NAME
-#define NAMESPACE_NAME wyc
+#ifndef STB_LOG_NAMESPACE
+#define STB_LOG_NAMESPACE namespace stb
 #endif
 
 #ifdef USE_NAMESPACE
-namespace NAMESPACE_NAME {
+STB_LOG_NAMESPACE {
 #endif
 
 	enum StbLogLevel
@@ -34,10 +35,10 @@ namespace NAMESPACE_NAME {
 	#define CACHELINE_SIZE 64
 #endif
 #define ASSERT_ALIGNMENT(ptr, align) assert((uintptr_t(ptr) % (align)) == 0)
-// default log file rotate size
-#define LOG_FILE_ROTATE_SIZE (4*1024*1024)
+// default log file rotate size 256 MB
+#define LOG_FILE_ROTATE_SIZE (256*1024*1024)
 // define log file rotate count
-#define LOG_FILE_ROTATE_COUNT 5
+#define LOG_FILE_ROTATE_COUNT 8
 
 	struct alignas(CACHELINE_SIZE) Sequence
 	{
@@ -104,6 +105,42 @@ namespace NAMESPACE_NAME {
 
 	class CLogger;
 
+	class CLogTimeFormatter
+	{
+	public:
+		virtual const char* format_time(LogEventTime t) = 0;
+	};
+
+	// time string format: "HH:MM:SS", 8 char
+	class CTimeFormatter : public CLogTimeFormatter
+	{
+	public:
+		virtual const char* format_time(LogEventTime t) override;
+	private:
+		static constexpr unsigned MAX_LENGTH = 9;
+		char m_buf[MAX_LENGTH];
+	};
+
+	// time string format: "HH:MM:SS.xxx", 12 char
+	class CMsTimeFormatter : public CLogTimeFormatter
+	{
+	public:
+		virtual const char* format_time(LogEventTime t) override;
+	private:
+		static constexpr unsigned MAX_LENGTH = 13;
+		char m_buf[MAX_LENGTH];
+	};
+
+	// time string format: "YYYY-MM-DD HH:MM:SS", 19 char 
+	class CDateTimeFormatter : public CLogTimeFormatter
+	{
+	public:
+		virtual const char* format_time(LogEventTime t) override;
+	private:
+		static constexpr unsigned MAX_LENGTH = 20;
+		char m_buf[MAX_LENGTH];
+	};
+
 	class CLogHandler
 	{
 	public:
@@ -135,10 +172,14 @@ namespace NAMESPACE_NAME {
 		inline bool is_closed() const {
 			return m_closed;
 		}
+		inline void set_time_formatter(std::unique_ptr<CLogTimeFormatter> &&ptr) {
+			m_formatter = std::move(ptr);
+		}
 
-	private:
+	protected:
 		CLogger* m_logger;
 		std::vector<LogFilter> m_filters;
+		std::unique_ptr<CLogTimeFormatter> m_formatter;
 		bool m_closed;
 		Sequence m_seq;
 	};
@@ -149,9 +190,9 @@ namespace NAMESPACE_NAME {
 		virtual void process_event(const LogEvent *log) override;
 	};
 
-	// Platform dependence filesystem api
+	// platform dependence filesystem api
 	// It should be replaced by std::filesystem (C++17) if possible
-	class filesystem
+	class CLogFileSystem
 	{
 	public:
 #if defined(_WIN32) || defined(_WIN64)
@@ -172,7 +213,7 @@ namespace NAMESPACE_NAME {
 	class CLogFile : public CLogHandler
 	{
 	public:
-		CLogFile(const char *filepath, size_t rotate_size=LOG_FILE_ROTATE_SIZE, int rotate_count=LOG_FILE_ROTATE_COUNT);
+		CLogFile(const char *filepath, bool append = false, int rotate_count = LOG_FILE_ROTATE_COUNT, size_t rotate_size=LOG_FILE_ROTATE_SIZE);
 		virtual ~CLogFile();
 		virtual void process_event(const LogEvent *log) override;
 		virtual void on_close() override;
@@ -191,7 +232,7 @@ namespace NAMESPACE_NAME {
 		void rotate();
 
 	private:
-		static FILE* _share_open(const char* path);
+		static FILE* _share_open(const char* path, const char* mode);
 
 		FILE * m_hfile;
 		std::string m_logpath;
@@ -264,14 +305,13 @@ namespace NAMESPACE_NAME {
 #include <sys/stat.h>
 #include <stdarg.h>
 #include <thread>
-#include <new>
 #include <ctime>
 #include <string>
 
 #define LOG_EVENT_BUFFER(log) (char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
 
 #ifdef USE_NAMESPACE
-namespace NAMESPACE_NAME {
+STB_LOG_NAMESPACE {
 #endif
 
 	size_t CLogger::get_next_power2(size_t val)
@@ -453,17 +493,20 @@ namespace NAMESPACE_NAME {
 
 	CLogHandler::CLogHandler()
 		: m_logger(nullptr)
+		, m_formatter(nullptr)
 		, m_closed(false)
 	{
 		ASSERT_ALIGNMENT(this, CACHELINE_SIZE);
 		ASSERT_ALIGNMENT(&m_seq, CACHELINE_SIZE);
 		m_seq.set(0);
+		m_formatter = std::make_unique<CTimeFormatter>();
 	}
 
 	CLogHandler::~CLogHandler()
 	{
 		if (m_logger) {
 			m_logger->remove_handler(this);
+			m_logger = nullptr;
 		}
 	}
 	
@@ -502,38 +545,73 @@ namespace NAMESPACE_NAME {
 	}
 
 	// --------------------------------
-	// Standard output logger implementation
+	// CLogTimeFormatter implementation
+	// --------------------------------
+
+	const char* CTimeFormatter::format_time(LogEventTime t)
+	{
+		time_t timestamp = std::chrono::system_clock::to_time_t(t);
+		tm datetime;
+		localtime_s(&datetime, &timestamp);
+		if (strftime(m_buf, MAX_LENGTH, "%T", &datetime) == 0) {
+			m_buf[MAX_LENGTH - 1] = 0;
+		}
+		return m_buf;
+	}
+
+	const char* CMsTimeFormatter::format_time(LogEventTime t) 
+	{
+		time_t timestamp = std::chrono::system_clock::to_time_t(t);
+		tm datetime;
+		localtime_s(&datetime, &timestamp);
+		auto len = strftime(m_buf, MAX_LENGTH, "%T", &datetime);
+		if (len == 0) {
+			m_buf[MAX_LENGTH - 1] = 0;
+			return m_buf;
+		}
+		auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch());
+		sprintf(m_buf + len, ".%03d", int(msec.count() % 1000));
+		return m_buf;
+	}
+
+	const char* CDateTimeFormatter::format_time(LogEventTime t) 
+	{
+		time_t timestamp = std::chrono::system_clock::to_time_t(t);
+		tm datetime;
+		localtime_s(&datetime, &timestamp);
+		if (strftime(m_buf, MAX_LENGTH, "%F %T", &datetime) == 0) {
+			m_buf[MAX_LENGTH - 1] = 0;
+		}
+		return m_buf;
+	}
+
+	// --------------------------------
+	// Standard logger implementation
 	// --------------------------------
 
 	void CLogStdout::process_event(const LogEvent * log)
 	{
-		time_t timestamp = std::chrono::system_clock::to_time_t(log->time);
-		tm datetime;
-		localtime_s(&datetime, &timestamp);
-		// time string format:
-		// 1. "YYYY-MM-DD HH:MM:SS", 19 char 
-		// 2. "HH:MM:SS", 9 char
-		const char *TIME_FORMAT = "%F %T";
-		constexpr unsigned MAX_LENGTH = 20;
-		char stime[MAX_LENGTH];
-		if (strftime(stime, MAX_LENGTH, TIME_FORMAT, &datetime) > 0) {
-			auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(log->time.time_since_epoch());
-			printf("[%s.%03d] ", stime, int(msec.count() % 1000));
+		if (m_formatter) {
+			const char *stime = m_formatter->format_time(log->time);
+			printf("[%s] ", stime);
+		}
+		if (log->channel[0] != 0) {
+			printf("[%s] ", log->channel);
 		}
 		const char *message = LOG_EVENT_BUFFER(log);
-		printf("[%s] %s\n", log->channel, message);
+		printf("%s\n", message);
 	}
 
 	// --------------------------------
 	// File system implementation
 	// --------------------------------
 	
-	void filesystem::normpath(std::string & path)
+	void CLogFileSystem::normpath(std::string & path)
 	{
 		std::replace(path.begin(), path.end(), reversed_seperator, seperator);
 	}
 
-	void filesystem::split(const std::string &path, std::string &dir, std::string &file_name)
+	void CLogFileSystem::split(const std::string &path, std::string &dir, std::string &file_name)
 	{
 		size_t pos = path.rfind(seperator);
 		if (pos != std::string::npos) {
@@ -547,7 +625,7 @@ namespace NAMESPACE_NAME {
 		}
 	}
 
-	void filesystem::split_ext(const std::string &file_name, std::string &base_name, std::string &ext)
+	void CLogFileSystem::split_ext(const std::string &file_name, std::string &base_name, std::string &ext)
 	{
 		size_t pos = file_name.rfind('.');
 		if (pos != std::string::npos) {
@@ -560,19 +638,19 @@ namespace NAMESPACE_NAME {
 		}
 	}
 
-	bool filesystem::isdir(const std::string &path)
+	bool CLogFileSystem::isdir(const std::string &path)
 	{
 		struct stat path_st;
 		return stat(path.c_str(), &path_st) == 0 && path_st.st_mode & _S_IFDIR;
 	}
 
-	bool filesystem::isfile(const std::string &path)
+	bool CLogFileSystem::isfile(const std::string &path)
 	{
 		struct stat path_st;
 		return stat(path.c_str(), &path_st) == 0 && path_st.st_mode & _S_IFREG;
 	}
 
-	bool filesystem::makedirs(const std::string &path)
+	bool CLogFileSystem::makedirs(const std::string &path)
 	{
 		std::string cmd = "mkdir ";
 		cmd += path;
@@ -586,29 +664,34 @@ namespace NAMESPACE_NAME {
 	// File logger implementation
 	// --------------------------------
 
-	FILE * CLogFile::_share_open(const char * path)
+	FILE * CLogFile::_share_open(const char * path, const char *mode)
 	{
 #if defined(_WIN32) || defined(_WIN64)
-		return _fsopen(path, "w", _SH_DENYWR);
+		return _fsopen(path, mode, _SH_DENYWR);
 #else
-		return fopen(path, "w");
+		return fopen(path, mode);
 #endif
 	}
 
-	CLogFile::CLogFile(const char* filepath, size_t rotate_size, int rotate_count)
+	CLogFile::CLogFile(const char* filepath, bool append, int rotate_count, size_t rotate_size)
 		: m_hfile(nullptr)
 		, m_cur_size(0)
 		, m_rotate_size(rotate_size)
 		, m_rotate_count(rotate_count)
 		, m_curfile(filepath)
 	{
-		filesystem::normpath(m_curfile);
-		filesystem::split(m_curfile, m_logpath, m_logname);
-		if (!filesystem::isdir(m_logpath) && !filesystem::makedirs(m_logpath)) {
+		CLogFileSystem::normpath(m_curfile);
+		CLogFileSystem::split(m_curfile, m_logpath, m_logname);
+		if (!CLogFileSystem::isdir(m_logpath) && !CLogFileSystem::makedirs(m_logpath)) {
 			printf("Fail to create log director [%s]\n", m_logpath.c_str());
 			m_logpath = "";
 		}
-		m_hfile = _share_open(m_curfile.c_str());
+		if (append)
+			m_hfile = _share_open(m_curfile.c_str(), "a");
+		else if (CLogFileSystem::isfile(m_curfile))
+			rotate();
+		else
+			m_hfile = _share_open(m_curfile.c_str(), "w");
 	}
 
 	CLogFile::~CLogFile() 
@@ -621,24 +704,19 @@ namespace NAMESPACE_NAME {
 
 	void CLogFile::process_event(const LogEvent *log)
 	{
-		time_t timestamp = std::chrono::system_clock::to_time_t(log->time);
-		tm datetime;
-		localtime_s(&datetime, &timestamp);
-		// time string format:
-		// 1. "YYYY-MM-DD HH:MM:SS", 19 char 
-		// 2. "HH:MM:SS", 9 char
-		const char *TIME_FORMAT = "%F %T";
-		constexpr unsigned MAX_LENGTH = 20;
-		char stime[MAX_LENGTH];
-		if (strftime(stime, MAX_LENGTH, TIME_FORMAT, &datetime) > 0) {
-			auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(log->time.time_since_epoch());
-			m_cur_size += fprintf(m_hfile, "[%s.%03d] ", stime, int(msec.count() % 1000));
+		if (m_formatter) {
+			const char *stime = m_formatter->format_time(log->time);
+			m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+		}
+		if (log->channel[0] != 0) {
+			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
 		}
 		const char *message = LOG_EVENT_BUFFER(log);
-		m_cur_size += fprintf(m_hfile, "[%s] %s\n", log->channel, message);
+		m_cur_size += fprintf(m_hfile, "%s\n", message);
 		fflush(m_hfile);
-		if (m_cur_size >= m_rotate_size)
+		if (m_cur_size >= m_rotate_size) {
 			rotate();
+		}
 	}
 
 	void CLogFile::on_close()
@@ -651,16 +729,18 @@ namespace NAMESPACE_NAME {
 
 	void CLogFile::rotate()
 	{
-		if (m_rotate_count < 1 || !m_hfile)
+		if (m_rotate_count < 1)
 			return;
-		fclose(m_hfile);
-		m_hfile = 0;
+		if (m_hfile) {
+			fclose(m_hfile);
+			m_hfile = 0;
+		}
 		std::string logfile, ext;
-		filesystem::split_ext(m_curfile, logfile, ext);
+		CLogFileSystem::split_ext(m_curfile, logfile, ext);
 		std::string last_file = logfile, cur_file;
 		last_file += std::to_string(m_rotate_count);
 		last_file += ext;
-		if (filesystem::isfile(last_file)) {
+		if (CLogFileSystem::isfile(last_file)) {
 			if (std::remove(last_file.c_str()) != 0)
 				return;
 		}
@@ -669,12 +749,12 @@ namespace NAMESPACE_NAME {
 			cur_file = logfile;
 			cur_file += std::to_string(i);
 			cur_file += ext;
-			if (filesystem::isfile(cur_file)) 
+			if (CLogFileSystem::isfile(cur_file)) 
 				std::rename(cur_file.c_str(), last_file.c_str());
 			last_file = cur_file;
 		}
 		std::rename(m_curfile.c_str(), last_file.c_str());
-		m_hfile = _share_open(m_curfile.c_str());
+		m_hfile = _share_open(m_curfile.c_str(), "w");
 	}
 
 	// --------------------------------
@@ -696,22 +776,17 @@ namespace NAMESPACE_NAME {
 	{
 		if (!m_is_debugger)
 			return;
-		time_t timestamp = std::chrono::system_clock::to_time_t(log->time);
-		tm datetime;
-		localtime_s(&datetime, &timestamp);
-		// time string in the format "[HH:MM:SS.mmm]", 14 char
-		constexpr unsigned MAX_LENGTH = 16;
-		char stime[MAX_LENGTH];
-		auto slen = strftime(stime, MAX_LENGTH, "[%T", &datetime);
-		if (slen > 0)
-		{
-			auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(log->time.time_since_epoch());
-			if(sprintf(stime + slen, ".%03d] ", int(msec.count() % 1000)) > 0)
-				OutputDebugStringA(stime);
+		if (m_formatter) {
+			const char *stime = m_formatter->format_time(log->time);
+			OutputDebugStringA("[");
+			OutputDebugStringA(stime);
+			OutputDebugStringA("] ");
 		}
-		OutputDebugStringA("[");
-		OutputDebugStringA(log->channel);
-		OutputDebugStringA("] ");
+		if (log->channel[0] != 0) {
+			OutputDebugStringA("[");
+			OutputDebugStringA(log->channel);
+			OutputDebugStringA("] ");
+		}
 		const char *message = LOG_EVENT_BUFFER(log);
 		OutputDebugStringA(message);
 		OutputDebugStringA("\n");
