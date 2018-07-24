@@ -30,9 +30,9 @@ private:
 	std::atomic<unsigned> *m_counter;
 };
 
-void common_test()
+void thread_test()
 {
-	printf("stb_log common test\n");
+	printf("stb_log thread test\n");
 	printf("core: %d\n", std::thread::hardware_concurrency());
 
 	constexpr int channel_count = 2;
@@ -128,8 +128,33 @@ void common_test()
 	printf("Success\n");
 }
 
+void common_test()
+{
+	printf("stb_log common test\n");
+	CLogger *logger = new CLogger(256);
+	CLogStdout *handler = new CLogStdout();
+	logger->add_handler(handler);
+	std::atomic<bool> is_end = false;
+
+	std::thread h1([&] {
+		while (!handler->is_closed()) {
+			handler->process();
+			std::this_thread::yield();
+		}
+	});
+
+	logger->write(0, "DEBUG", "hello, world");
+	logger->close();
+	h1.join();
+
+	delete logger;
+	delete handler;
+	printf("Success\n");
+}
+
 int main(int args, char *argv[])
 {
+	//thread_test();
 	common_test();
 	getchar();
 	return 0;

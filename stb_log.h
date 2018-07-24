@@ -8,9 +8,14 @@
 #include <cassert>
 #include <vector>
 #include <atomic>
+#include <chrono>
+
+#ifndef NAMESPACE_NAME
+#define NAMESPACE_NAME wyc
+#endif
 
 #ifdef USE_NAMESPACE
-namespace wyc {
+namespace NAMESPACE_NAME {
 #endif
 
 	enum StbLogLevel
@@ -21,6 +26,8 @@ namespace wyc {
 		INFO = 20,
 		DEBUG = 10,
 		NOTSET = 0,
+		// negative values are reserved for internal ctrl code
+		CLOSE = -1,  
 	};
 
 #ifndef CACHELINE_SIZE
@@ -73,11 +80,15 @@ namespace wyc {
 		free(raw);
 	}
 
+	using LogClock = std::chrono::system_clock;
+	using LogEventTime = LogClock::time_point;
+
 	struct LogEvent
 	{
 		int level;
-		char channel[16];
 		unsigned capacity;
+		char channel[16];
+		LogEventTime time;
 		union {
 			void *buffer;
 			char fixed_buffer[1];
@@ -117,10 +128,14 @@ namespace wyc {
 		inline void add_filter(LogFilter filter) {
 			m_filters.push_back(filter);
 		}
+		inline bool is_closed() const {
+			return m_closed;
+		}
 
 	private:
 		CLogger* m_logger;
 		std::vector<LogFilter> m_filters;
+		bool m_closed;
 		Sequence m_seq;
 	};
 
@@ -153,14 +168,17 @@ namespace wyc {
 		~CLogger();
 		CLogger(const CLogger&) = delete;
 		CLogger& operator = (const CLogger&) = delete;
-		void write(int level, const void *data, size_t size);
+		void write(int level, const void *data = 0, size_t size = 0);
 		void write(int level, const char* channel, const char *format, ...);
 		void add_handler(CLogHandler *handler);
 		void remove_handler(CLogHandler *handler);
-		const LogEvent* get_event(uint64_t seq) const {
+		inline void close() {
+			write((int)StbLogLevel::CLOSE);
+		}
+		inline const LogEvent* get_event(uint64_t seq) const {
 			return m_event_queue + (seq & m_size_mask);
 		}
-		LogEvent* get_event(uint64_t seq) {
+		inline LogEvent* get_event(uint64_t seq) {
 			return m_event_queue + (seq & m_size_mask);
 		}
 		
@@ -194,9 +212,12 @@ namespace wyc {
 #include <emmintrin.h>
 #include <thread>
 #include <new>
+#include <ctime>
+
+#define LOG_EVENT_BUFFER(log) (char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
 
 #ifdef USE_NAMESPACE
-namespace wyc {
+namespace NAMESPACE_NAME {
 #endif
 
 	size_t CLogger::get_next_power2(size_t val)
@@ -270,8 +291,10 @@ namespace wyc {
 		log->level = level;
 		log->channel[0] = 0;
 		// write data
-		char *buf = ensure_buffer(log, size);
-		memcpy(buf, data, size);
+		if (data && size > 0) {
+			char *buf = ensure_buffer(log, size);
+			memcpy(buf, data, size);
+		}
 		// publish event
 		log->publish.store(seq + 1);
 	}
@@ -288,6 +311,7 @@ namespace wyc {
 		// write header
 		LogEvent *log = get_event(seq);
 		log->level = level;
+		log->time = LogClock::now();
 		constexpr unsigned channel_size = sizeof(log->channel) - 1;
 		if (strlen(channel) <= channel_size)
 			strcpy(log->channel, channel);
@@ -375,6 +399,7 @@ namespace wyc {
 
 	CLogHandler::CLogHandler()
 		: m_logger(nullptr)
+		, m_closed(false)
 	{
 		ASSERT_ALIGNMENT(this, CACHELINE_SIZE);
 		ASSERT_ALIGNMENT(&m_seq, CACHELINE_SIZE);
@@ -393,19 +418,25 @@ namespace wyc {
 		assert(m_logger);
 		uint64_t seq = m_seq.get(), pub;
 		const LogEvent *log;
-		while (true) {
+		while (!m_closed) {
 			log = m_logger->get_event(seq);
 			pub = log->publish.load();
 			if (pub > seq) {
-				bool b = true;
-				for (auto filter : m_filters) {
-					if (!filter(log)) {
-						b = false;
-						break;
-					}
+				if (log->level == StbLogLevel::CLOSE) {
+					// process system event
+					m_closed = true;
 				}
-				if(b)
-					process_event(log);
+				else { // process user event
+					bool b = true;
+					for (auto filter : m_filters) {
+						if (!filter(log)) {
+							b = false;
+							break;
+						}
+					}
+					if (b)
+						process_event(log);
+				}
 				m_seq.store(pub);
 				seq += 1;
 				assert(pub == seq);
@@ -413,6 +444,36 @@ namespace wyc {
 			}
 			break;
 		}
+	}
+
+	// --------------------------------
+	// Event handlers
+	// --------------------------------
+
+	void CLogStdout::process_event(const LogEvent * log)
+	{
+		constexpr unsigned MAX_LENGTH = 26;
+		time_t timestamp = std::chrono::system_clock::to_time_t(log->time);
+		tm datetime;
+		localtime_s(&datetime, &timestamp);
+		char stime[MAX_LENGTH];
+		int slen = 0;
+		// time string in the format "[YYYY-MM-DD HH:MM:SS]"
+		auto cnt = strftime(stime, MAX_LENGTH, "%F %T", &datetime);
+		if (cnt > 0)
+			slen += cnt;
+		else
+			stime[0] = 0;
+		assert(slen < MAX_LENGTH);
+		auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(log->time.time_since_epoch());
+		cnt = sprintf(stime + slen, ".%03u", int(msec.count() % 1000));
+		if (cnt > 0)
+			slen += cnt;
+		else
+			stime[slen] = 0;
+		assert(slen < MAX_LENGTH);
+		const char *message = LOG_EVENT_BUFFER(log);
+		printf("[%s] [%s] %s\n", stime, log->channel, message);
 	}
 
 #ifdef USE_NAMESPACE

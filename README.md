@@ -12,8 +12,8 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 
 - [x] Log Message formatting.
 - [x] Log message filtering.
-- [ ] Console logger.
-- [ ] File logger.
+- [x] Logging to standard output.
+- [ ] Logging to file.
 - [ ] Log file rotation.
 - [ ] Preprocess macro with compile time filtering.
 
