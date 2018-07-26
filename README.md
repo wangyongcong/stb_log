@@ -31,3 +31,6 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 // then include the header anywhere that need it
 #include "stb_log.h"
 ```
+
+## Benchmark
+comming soon...

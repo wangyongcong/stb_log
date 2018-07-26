@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <thread>
 
 #ifndef STB_LOG_NAMESPACE
 #define STB_LOG_NAMESPACE namespace stb
@@ -18,6 +19,28 @@
 #ifdef USE_NAMESPACE
 STB_LOG_NAMESPACE {
 #endif
+
+	// --------------------------------
+	// library settings
+	// --------------------------------
+
+#ifndef CACHELINE_SIZE
+#define CACHELINE_SIZE 64
+#endif
+#define ASSERT_ALIGNMENT(ptr, align) assert((uintptr_t(ptr) % (align)) == 0)
+	// default log file rotate size 256 MB
+#define LOG_FILE_ROTATE_SIZE (256*1024*1024)
+	// define log file rotate count
+#define LOG_FILE_ROTATE_COUNT 8
+	// logger queue buffer size in log entry count
+	// the larger size, the better concurrent performance (less waiting for synchronization)
+#define LOG_BUFFER_SIZE 256
+	// logger worker thread sleep time when it's casual
+#define LOG_WORKER_SLEEP_TIME 1
+
+	// --------------------------------
+	// public user interface
+	// --------------------------------
 
 	enum StbLogLevel
 	{
@@ -30,15 +53,40 @@ STB_LOG_NAMESPACE {
 		// negative values are reserved for internal ctrl code
 		LOG_CODE_CLOSE = -1,  
 	};
+	
+	typedef std::chrono::milliseconds::rep millisecond_t;
 
-#ifndef CACHELINE_SIZE
-	#define CACHELINE_SIZE 64
-#endif
-#define ASSERT_ALIGNMENT(ptr, align) assert((uintptr_t(ptr) % (align)) == 0)
-// default log file rotate size 256 MB
-#define LOG_FILE_ROTATE_SIZE (256*1024*1024)
-// define log file rotate count
-#define LOG_FILE_ROTATE_COUNT 8
+	class CLogger;
+
+	struct LoggerContext {
+		CLogger *logger;
+		std::vector<std::thread*> thread_pool;
+	};
+	// get global logger singleton
+	inline LoggerContext* get_logger() {
+		static LoggerContext s_logger_context;
+		return &s_logger_context;
+	}
+	// close logger
+	void close_logger();
+
+	// start logging to standard output
+	bool start_logger(millisecond_t sleep_time=LOG_WORKER_SLEEP_TIME);
+	
+	// start logging to file
+	bool start_file_logger(const char *log_file_path, 
+		bool append_mode = false, 
+		int max_rotation = LOG_FILE_ROTATE_COUNT,
+		size_t rotate_size = LOG_FILE_ROTATE_SIZE,
+		millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME
+	);
+	
+	// start logging to debug console
+	bool start_debug_logger(millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+
+	// --------------------------------
+	// END of interface declaration
+	// --------------------------------
 
 	struct alignas(CACHELINE_SIZE) Sequence
 	{
@@ -281,7 +329,7 @@ STB_LOG_NAMESPACE {
 		static void operator delete(void *ptr) {
 			aligned_free(ptr);
 		}
-		static size_t get_next_power2(size_t size);
+		static size_t get_next_power2(size_t val);
 		static char* ensure_buffer(LogEvent *log, size_t size);
 
 	private:
@@ -304,7 +352,6 @@ STB_LOG_NAMESPACE {
 #include <emmintrin.h>
 #include <sys/stat.h>
 #include <stdarg.h>
-#include <thread>
 #include <ctime>
 #include <string>
 
@@ -313,6 +360,61 @@ STB_LOG_NAMESPACE {
 #ifdef USE_NAMESPACE
 STB_LOG_NAMESPACE {
 #endif
+
+#define ENSURE_LOGGER(context) if(!(context)->logger) {\
+	(context)->logger = new CLogger(LOG_BUFFER_SIZE);\
+}
+
+	void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time) 
+	{
+		LoggerContext *lc = get_logger();
+		ENSURE_LOGGER(lc);
+		lc->logger->add_handler(handler);
+		std::chrono::milliseconds msec(sleep_time);
+		std::thread *worker = new std::thread([handler, msec] {
+			while (!handler->is_closed()) {
+				handler->process();
+				std::this_thread::sleep_for(msec);
+			}
+		});
+		lc->thread_pool.push_back(worker);
+	}
+
+	void close_logger()
+	{
+		LoggerContext *lc = get_logger();
+		if (!lc->logger)
+			return;
+		lc->logger->close();
+		for (auto th : lc->thread_pool) {
+			th->join();
+		}
+		lc->thread_pool.clear();
+		delete lc->logger;
+		lc->logger = nullptr;
+	}
+
+	bool start_logger(millisecond_t sleep_time)
+	{
+		CLogStdout *handler = new CLogStdout();
+		start_handler_thread(handler, sleep_time);
+		return true;
+	}
+
+	bool start_file_logger(const char *log_file_path, bool append_mode, 
+		int max_rotation, size_t rotate_size, millisecond_t sleep_time)
+	{
+		CLogFile *handler = new CLogFile(log_file_path, append_mode, max_rotation, rotate_size);
+		start_handler_thread(handler, sleep_time);
+		return true;
+	}
+	
+	bool start_debug_logger(millisecond_t sleep_time)
+	{
+		CLogDebugWindow *handler = new CLogDebugWindow(); 
+		start_handler_thread(handler, sleep_time);
+		return true;
+	}
 
 	size_t CLogger::get_next_power2(size_t val)
 	{
@@ -334,7 +436,7 @@ STB_LOG_NAMESPACE {
 		return val;
 	}
 
-	// --------------------------------
+// --------------------------------
 	// CLogger implementation
 	// --------------------------------
 
