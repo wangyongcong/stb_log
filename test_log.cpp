@@ -5,7 +5,7 @@
 #include "stb_log.h"
 
 #ifdef USE_NAMESPACE
-using STB_LOG_NAMESPACE;
+using namespace STB_LOG_NAMESPACE;
 #endif
 
 class CLogWriter: public CLogHandler
@@ -34,7 +34,7 @@ private:
 
 void thread_test()
 {
-	printf("stb_log thread test\n");
+	printf("stb_log thread test start...\n");
 	printf("core: %d\n", std::thread::hardware_concurrency());
 
 	constexpr int channel_count = 2;
@@ -127,12 +127,12 @@ void thread_test()
 	delete h1;
 	delete h2;
 	delete logger;
-	printf("Success\n");
+	printf("success\n");
 }
 
 void common_test()
 {
-	printf("stb_log common test\n");
+	printf("stb_log common test start...\n");
 	CLogger *logger = new CLogger(256);
 	CLogHandler *handlers[] = {
 		new CLogStdout(),
@@ -186,12 +186,12 @@ void common_test()
 	for (auto h : handlers)
 		delete h;
 	delete logger;
-	printf("Success\n");
+	printf("success\n");
 }
 
 void file_rotate_test()
 {
-	printf("stb_log file rotate test\n");
+	printf("stb_log file rotate test start...\n");
 	CLogFile *h = new CLogFile("logs/exception/test.log");
 	assert(h->get_base_name() == "test.log");
 #if defined(_WIN32) || defined(_WIN64)
@@ -206,14 +206,42 @@ void file_rotate_test()
 	h->rotate();
 
 	delete h;
-	printf("Success\n");
+	printf("success\n");
+}
+
+void usage_test()
+{
+	printf("stb_log usage test start...\n");
+	start_logger();
+	start_file_logger("logs/test.log");
+	start_debug_logger();
+
+#ifdef LOG_SEVERITY_LEVEL
+	constexpr int log_severity_level = LOG_SEVERITY_LEVEL;
+#else
+	constexpr int log_severity_level = 99;
+#endif
+	log_write(LOG_INFO, "TEST", "current log sevirity level is [%d]", log_severity_level);
+	log_debug("a debug message");
+	log_info("a info message");
+	log_warning("a warning message");
+	log_error("a error message");
+	log_critical("a critical message");
+
+	for (int i = 0; i < 1000; ++i) {
+		log_info("message %d", i);
+	}
+
+	close_logger();
+	printf("success\n");
 }
 
 int main(int args, char *argv[])
 {
 	//thread_test();
-	common_test();
 	//file_rotate_test();
+	//common_test();
+	usage_test();
 	getchar();
 	return 0;
 }

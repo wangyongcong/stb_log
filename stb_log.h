@@ -12,17 +12,27 @@
 #include <memory>
 #include <thread>
 
-#ifndef STB_LOG_NAMESPACE
-#define STB_LOG_NAMESPACE namespace stb
-#endif
-
 #ifdef USE_NAMESPACE
-STB_LOG_NAMESPACE {
+#ifndef STB_LOG_NAMESPACE
+#define STB_LOG_NAMESPACE stb
+#endif
+namespace STB_LOG_NAMESPACE {
 #endif
 
 	// --------------------------------
 	// library settings
 	// --------------------------------
+	enum StbLogLevel
+	{
+		LOG_CRITICAL = 50,
+		LOG_ERROR = 40,
+		LOG_WARNING = 30,
+		LOG_INFO = 20,
+		LOG_DEBUG = 10,
+		LOG_NOTSET = 0,
+		// negative values are reserved for internal ctrl code
+		LOG_CODE_CLOSE = -1,
+	};
 
 #ifndef CACHELINE_SIZE
 #define CACHELINE_SIZE 64
@@ -36,39 +46,75 @@ STB_LOG_NAMESPACE {
 	// the larger size, the better concurrent performance (less waiting for synchronization)
 #define LOG_BUFFER_SIZE 256
 	// logger worker thread sleep time when it's casual
-#define LOG_WORKER_SLEEP_TIME 1
+#define LOG_WORKER_SLEEP_TIME 20
+	// log severity level
+#ifndef LOG_SEVERITY_LEVEL
+#define LOG_SEVERITY_LEVEL 0
+#endif
+	// write log
+#define log_write(lvl, channel, fmt, ...) (get_log_context()->logger->write(lvl, channel, (fmt), __VA_ARGS__))
+#ifdef LOG_SEVERITY_LEVEL
+	// write critical log
+#if LOG_SEVERITY_LEVEL <= 50
+#define log_critical(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_CRITICAL, "CRITICAL", (fmt), __VA_ARGS__))
+#else
+#define log_critical(fmt,...)
+#endif
+	// write error log
+#if LOG_SEVERITY_LEVEL <= 40
+#define log_error(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_ERROR, "ERROR", (fmt), __VA_ARGS__))
+#else
+#define log_error(fmt,...)
+#endif
+	// write warning log
+#if LOG_SEVERITY_LEVEL <= 30
+#define log_warning(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_WARNING, "WARNING", (fmt), __VA_ARGS__))
+#else
+#define log_warning(fmt,...)
+#endif
+	// write info log
+#if LOG_SEVERITY_LEVEL <= 20
+#define log_info(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_INFO, "INFO", (fmt), __VA_ARGS__))
+#else
+#define log_info(fmt,...)
+#endif
+	// write debug log
+#if LOG_SEVERITY_LEVEL <= 10
+#define log_debug(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_DEBUG, "DEBUG", (fmt), __VA_ARGS__))
+#else
+#define log_debug(fmt,...)
+#endif
+#else // skip log macro
+#define log_critical(fmt,...)
+#define log_error(fmt,...)
+#define log_warning(fmt,...)
+#define log_info(fmt,...)
+#define log_debug(fmt,...)
+#endif // LOG_SEVERITY_LEVEL
 
 	// --------------------------------
 	// public user interface
 	// --------------------------------
+	class CLogger;
+	class CLogHandler;
 
-	enum StbLogLevel
-	{
-		LOG_CRITICAL = 50,
-		LOG_ERROR = 40,
-		LOG_WARNING = 30,
-		LOG_INFO = 20,
-		LOG_DEBUG = 10,
-		LOG_NOTSET = 0,
-		// negative values are reserved for internal ctrl code
-		LOG_CODE_CLOSE = -1,  
+	struct LogContext {
+		CLogger *logger;
+		std::vector<std::unique_ptr<std::thread>> thread_pool;
 	};
-	
 	typedef std::chrono::milliseconds::rep millisecond_t;
 
-	class CLogger;
-
-	struct LoggerContext {
-		CLogger *logger;
-		std::vector<std::thread*> thread_pool;
-	};
 	// get global logger singleton
-	inline LoggerContext* get_logger() {
-		static LoggerContext s_logger_context;
+	inline LogContext* get_log_context() {
+		static LogContext s_logger_context;
 		return &s_logger_context;
 	}
+
 	// close logger
 	void close_logger();
+	
+	// start a logger thread
+	void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time);
 
 	// start logging to standard output
 	bool start_logger(millisecond_t sleep_time=LOG_WORKER_SLEEP_TIME);
@@ -358,35 +404,31 @@ STB_LOG_NAMESPACE {
 #define LOG_EVENT_BUFFER(log) (char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
 
 #ifdef USE_NAMESPACE
-STB_LOG_NAMESPACE {
+namespace STB_LOG_NAMESPACE {
 #endif
-
-#define ENSURE_LOGGER(context) if(!(context)->logger) {\
-	(context)->logger = new CLogger(LOG_BUFFER_SIZE);\
-}
 
 	void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time) 
 	{
-		LoggerContext *lc = get_logger();
-		ENSURE_LOGGER(lc);
+		LogContext *lc = get_log_context();
+		if (!lc->logger)
+			lc->logger = new CLogger(LOG_BUFFER_SIZE);
 		lc->logger->add_handler(handler);
 		std::chrono::milliseconds msec(sleep_time);
-		std::thread *worker = new std::thread([handler, msec] {
+		lc->thread_pool.emplace_back(std::make_unique<std::thread>([handler, msec] {
 			while (!handler->is_closed()) {
 				handler->process();
 				std::this_thread::sleep_for(msec);
 			}
-		});
-		lc->thread_pool.push_back(worker);
+		}));
 	}
 
 	void close_logger()
 	{
-		LoggerContext *lc = get_logger();
+		LogContext *lc = get_log_context();
 		if (!lc->logger)
 			return;
 		lc->logger->close();
-		for (auto th : lc->thread_pool) {
+		for (auto &th : lc->thread_pool) {
 			th->join();
 		}
 		lc->thread_pool.clear();
@@ -397,6 +439,7 @@ STB_LOG_NAMESPACE {
 	bool start_logger(millisecond_t sleep_time)
 	{
 		CLogStdout *handler = new CLogStdout();
+		handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 		start_handler_thread(handler, sleep_time);
 		return true;
 	}
@@ -405,6 +448,7 @@ STB_LOG_NAMESPACE {
 		int max_rotation, size_t rotate_size, millisecond_t sleep_time)
 	{
 		CLogFile *handler = new CLogFile(log_file_path, append_mode, max_rotation, rotate_size);
+		handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 		start_handler_thread(handler, sleep_time);
 		return true;
 	}
@@ -412,6 +456,7 @@ STB_LOG_NAMESPACE {
 	bool start_debug_logger(millisecond_t sleep_time)
 	{
 		CLogDebugWindow *handler = new CLogDebugWindow(); 
+		handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 		start_handler_thread(handler, sleep_time);
 		return true;
 	}
@@ -601,7 +646,6 @@ STB_LOG_NAMESPACE {
 		ASSERT_ALIGNMENT(this, CACHELINE_SIZE);
 		ASSERT_ALIGNMENT(&m_seq, CACHELINE_SIZE);
 		m_seq.set(0);
-		m_formatter = std::make_unique<CTimeFormatter>();
 	}
 
 	CLogHandler::~CLogHandler()
