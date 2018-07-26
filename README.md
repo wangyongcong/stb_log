@@ -33,7 +33,7 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 
 // define global severity level
 #define LOG_SEVERITY_LEVEL 10
-// and include the header anywhere that need it
+// then include the header anywhere that need it
 #include "stb_log.h"
 
 int main(int args, char *argv[])
@@ -43,21 +43,21 @@ int main(int args, char *argv[])
 	// start a logger that write to file
 	// you can specify write mode, rotation, etc. plz follow the document.
 	start_file_logger("logs/test.log");
-	// start a logger that write debug console (Visual Studio)
+	// start a logger that write to debug console (Visual Studio)
 	start_debug_logger();
 
 	// after initialization, you can write log message in any thread
-	// the backend I/O take place in another thread
+	// backend I/O take place in seperate thread
 
 	// write log message in printf style
 	log_write(LOG_INFO, "channel_name", "current log sevirity level is [%d]", LOG_SEVERITY_LEVEL);
 
 	// write logs with different severity level
-	// these macros will be stripped according LOG_SEVERITY_LEVEL definition
+	// these macros may be stripped according LOG_SEVERITY_LEVEL definition
 	log_debug("a debug message");
-	log_info("a info message");
+	log_info("an infomation message");
 	log_warning("a warning message");
-	log_error("a error message");
+	log_error("an error message");
 	log_critical("a critical message");
 
 	// finally close logger
