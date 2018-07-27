@@ -400,6 +400,7 @@ namespace STB_LOG_NAMESPACE {
 #include <stdarg.h>
 #include <ctime>
 #include <string>
+#include <algorithm>
 
 #define LOG_EVENT_BUFFER(log) (char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
 
