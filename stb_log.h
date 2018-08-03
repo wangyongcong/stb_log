@@ -51,36 +51,42 @@ namespace STB_LOG_NAMESPACE {
 #ifndef LOG_SEVERITY_LEVEL
 #define LOG_SEVERITY_LEVEL 0
 #endif
+	// define LogLevel
+#ifdef USE_NAMESPACE
+#define STB_LOG_LEVEL STB_LOG_LEVEL
+#else
+#define STB_LOG_LEVEL StbLogLevel
+#endif
 	// write log
 #define log_write(lvl, channel, fmt, ...) (get_log_context()->logger->write(lvl, channel, (fmt), __VA_ARGS__))
 #ifdef LOG_SEVERITY_LEVEL
 	// write critical log
 #if LOG_SEVERITY_LEVEL <= 50
-#define log_critical(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_CRITICAL, "CRITICAL", (fmt), __VA_ARGS__))
+#define log_critical(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", (fmt), __VA_ARGS__))
 #else
 #define log_critical(fmt,...)
 #endif
 	// write error log
 #if LOG_SEVERITY_LEVEL <= 40
-#define log_error(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_ERROR, "ERROR", (fmt), __VA_ARGS__))
+#define log_error(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", (fmt), __VA_ARGS__))
 #else
 #define log_error(fmt,...)
 #endif
 	// write warning log
 #if LOG_SEVERITY_LEVEL <= 30
-#define log_warning(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_WARNING, "WARNING", (fmt), __VA_ARGS__))
+#define log_warning(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", (fmt), __VA_ARGS__))
 #else
 #define log_warning(fmt,...)
 #endif
 	// write info log
 #if LOG_SEVERITY_LEVEL <= 20
-#define log_info(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_INFO, "INFO", (fmt), __VA_ARGS__))
+#define log_info(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_INFO, "INFO", (fmt), __VA_ARGS__))
 #else
 #define log_info(fmt,...)
 #endif
 	// write debug log
 #if LOG_SEVERITY_LEVEL <= 10
-#define log_debug(fmt,...) (get_log_context()->logger->write(STB_LOG_NAMESPACE::StbLogLevel::LOG_DEBUG, "DEBUG", (fmt), __VA_ARGS__))
+#define log_debug(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", (fmt), __VA_ARGS__))
 #else
 #define log_debug(fmt,...)
 #endif
