@@ -44,7 +44,7 @@ namespace STB_LOG_NAMESPACE {
 #define LOG_FILE_ROTATE_COUNT 8
 	// logger queue buffer size in log entry count
 	// the larger size, the better concurrent performance (less waiting for synchronization)
-#define LOG_BUFFER_SIZE 256
+#define LOG_BUFFER_SIZE 1024
 	// logger worker thread sleep time when it's casual
 #define LOG_WORKER_SLEEP_TIME 20
 	// log severity level
@@ -53,7 +53,7 @@ namespace STB_LOG_NAMESPACE {
 #endif
 	// define LogLevel
 #ifdef USE_NAMESPACE
-#define STB_LOG_LEVEL STB_LOG_LEVEL
+#define STB_LOG_LEVEL STB_LOG_NAMESPACE::StbLogLevel
 #else
 #define STB_LOG_LEVEL StbLogLevel
 #endif
@@ -585,8 +585,9 @@ namespace STB_LOG_NAMESPACE {
 	uint64_t CLogger::_claim(uint64_t count) 
 	{
 		uint64_t request_seq = m_seq_claim.fetch_add(count);
-		if (request_seq < m_min_seq)
+		if (request_seq <= m_min_seq + m_size_mask) {
 			return request_seq;
+		}
 		uint64_t min_seq = ULLONG_MAX, seq = 0;
 		for (CLogHandler *handler : m_handler_list) {
 			seq = handler->get_sequence();
