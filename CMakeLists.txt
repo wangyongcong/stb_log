@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.3)
 
 PROJECT(stb_log)
 
+set(CMAKE_CXX_STANDARD 14)
 set(NAMESPACE_NAME "" CACHE STRING "Wrap log apis with namespace")
 
 if(NOT NAMESPACE_NAME STREQUAL "")
@@ -10,6 +11,7 @@ if(NOT NAMESPACE_NAME STREQUAL "")
 endif()
 
 add_definitions("-DLOG_SEVERITY_LEVEL=0")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
 if(MSVC)
 	add_definitions("/Wall /WX /D_CRT_SECURE_NO_WARNINGS /W4 /wd4100 /wd4324")

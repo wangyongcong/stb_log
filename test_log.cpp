@@ -1,5 +1,5 @@
-#include <stdio.h>
-#include <time.h>
+#include <cstdio>
+#include <ctime>
 #include <random>
 #define STB_LOG_IMPLEMENTATION
 #include "stb_log.h"
@@ -44,9 +44,9 @@ void thread_test()
 	};
 	constexpr int max_write_count = 100000;
 
-	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch1_counter = 1;
-	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch2_counter = 1;
-	alignas(CACHELINE_SIZE) std::atomic<unsigned> max_read_count = max_write_count * 2;
+	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch1_counter(1);
+	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch2_counter(1);
+	alignas(CACHELINE_SIZE) std::atomic<unsigned> max_read_count(max_write_count * 2);
 
 	std::atomic<unsigned> *channel_counter[channel_count] = {
 		&ch1_counter, &ch2_counter
@@ -79,7 +79,7 @@ void thread_test()
 	});
 
 	std::thread th3([&] {
-		std::mt19937 random((unsigned)time(NULL));
+		std::mt19937 random((unsigned)time(nullptr));
 		for(int cnt=0; cnt < max_write_count; ++cnt)
 		{
 			auto i = random() % channel_count;
@@ -89,7 +89,7 @@ void thread_test()
 	});
 
 	std::thread th4([&] {
-		std::mt19937 random((unsigned)time(NULL));
+		std::mt19937 random((unsigned)time(nullptr));
 		for (int cnt = 0; cnt < max_write_count; ++cnt)
 		{
 			auto i = random() % channel_count;
@@ -109,8 +109,8 @@ void thread_test()
 	assert(max_read_count == 0);
 	auto &log1 = h1->get_logs();
 	auto &log2 = h2->get_logs();
-	printf("channel[1] = %d\n", log1.size());
-	printf("channel[2] = %d\n", log2.size());
+	printf("channel[1] = %d\n", unsigned(log1.size()));
+	printf("channel[2] = %d\n", unsigned(log2.size()));
 	assert(log1.size() + log2.size() == max_write_count * 2);
 	assert(log1.size() == ch1_counter - 1);
 	assert(log2.size() == ch2_counter - 1);
@@ -136,7 +136,9 @@ void common_test()
 	CLogger *logger = new CLogger(256);
 	CLogHandler *handlers[] = {
 		new CLogStdout(),
+#if defined(_WIN32) || defined(_WIN64)
 		new CLogDebugWindow(),
+#endif
 		new CLogFile("log/test.log"),
 	};
 	for (auto h: handlers)

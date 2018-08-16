@@ -58,35 +58,35 @@ namespace STB_LOG_NAMESPACE {
 #define STB_LOG_LEVEL StbLogLevel
 #endif
 	// write log
-#define log_write(lvl, channel, fmt, ...) (get_log_context()->logger->write(lvl, channel, (fmt), __VA_ARGS__))
+#define log_write(lvl, channel, fmt, ...) (get_log_context()->logger->write(lvl, channel, (fmt), ##__VA_ARGS__))
 #ifdef LOG_SEVERITY_LEVEL
 	// write critical log
 #if LOG_SEVERITY_LEVEL <= 50
-#define log_critical(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", (fmt), __VA_ARGS__))
+#define log_critical(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", (fmt), ##__VA_ARGS__))
 #else
 #define log_critical(fmt,...)
 #endif
 	// write error log
 #if LOG_SEVERITY_LEVEL <= 40
-#define log_error(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", (fmt), __VA_ARGS__))
+#define log_error(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", (fmt), ##__VA_ARGS__))
 #else
 #define log_error(fmt,...)
 #endif
 	// write warning log
 #if LOG_SEVERITY_LEVEL <= 30
-#define log_warning(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", (fmt), __VA_ARGS__))
+#define log_warning(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", (fmt), ##__VA_ARGS__))
 #else
 #define log_warning(fmt,...)
 #endif
 	// write info log
 #if LOG_SEVERITY_LEVEL <= 20
-#define log_info(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_INFO, "INFO", (fmt), __VA_ARGS__))
+#define log_info(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_INFO, "INFO", (fmt), ##__VA_ARGS__))
 #else
 #define log_info(fmt,...)
 #endif
 	// write debug log
 #if LOG_SEVERITY_LEVEL <= 10
-#define log_debug(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", (fmt), __VA_ARGS__))
+#define log_debug(fmt,...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", (fmt), ##__VA_ARGS__))
 #else
 #define log_debug(fmt,...)
 #endif
@@ -194,7 +194,7 @@ namespace STB_LOG_NAMESPACE {
 		char channel[16];
 		LogEventTime time;
 		union {
-			void *buffer;
+			char *buffer;
 			char fixed_buffer[1];
 		};
 		Sequence publish;
@@ -318,7 +318,7 @@ namespace STB_LOG_NAMESPACE {
 		virtual void process_event(const LogEvent *log) override;
 		virtual void on_close() override;
 		inline bool is_ready() const {
-			return m_hfile != 0;
+			return m_hfile != nullptr;
 		}
 		inline const std::string& get_directory() const {
 			return m_logpath;
@@ -361,7 +361,7 @@ namespace STB_LOG_NAMESPACE {
 		~CLogger();
 		CLogger(const CLogger&) = delete;
 		CLogger& operator = (const CLogger&) = delete;
-		void write(int level, const void *data = 0, size_t size = 0);
+		void write(int level, const void *data = nullptr, size_t size = 0);
 		void write(int level, const char* channel, const char *format, ...);
 		void add_handler(CLogHandler *handler);
 		void remove_handler(CLogHandler *handler);
@@ -462,10 +462,14 @@ namespace STB_LOG_NAMESPACE {
 	
 	bool start_debug_logger(millisecond_t sleep_time)
 	{
+#if defined(_WIN32) || defined(_WIN64)
 		CLogDebugWindow *handler = new CLogDebugWindow(); 
 		handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 		start_handler_thread(handler, sleep_time);
 		return true;
+#else
+		return false;
+#endif
 	}
 
 	size_t CLogger::get_next_power2(size_t val)
@@ -701,12 +705,19 @@ namespace STB_LOG_NAMESPACE {
 	// --------------------------------
 	// CLogTimeFormatter implementation
 	// --------------------------------
+#if defined(WIN32) || defined(WIN64)
+#define LOCALTIME(datetime, timestam) localtime_s(&(datetime), &(timestamp))
+#define S_IFDIR _S_IFDIR
+#define S_IFREG _S_IFREG
+#else
+#define LOCALTIME(datetime, timestamp) localtime_r(&(timestamp), &(datetime))
+#endif
 
 	const char* CTimeFormatter::format_time(LogEventTime t)
 	{
 		time_t timestamp = std::chrono::system_clock::to_time_t(t);
 		tm datetime;
-		localtime_s(&datetime, &timestamp);
+		LOCALTIME(datetime, timestamp);
 		if (strftime(m_buf, MAX_LENGTH, "%T", &datetime) == 0) {
 			m_buf[MAX_LENGTH - 1] = 0;
 		}
@@ -717,7 +728,7 @@ namespace STB_LOG_NAMESPACE {
 	{
 		time_t timestamp = std::chrono::system_clock::to_time_t(t);
 		tm datetime;
-		localtime_s(&datetime, &timestamp);
+		LOCALTIME(datetime, timestamp);
 		auto len = strftime(m_buf, MAX_LENGTH, "%T", &datetime);
 		if (len == 0) {
 			m_buf[MAX_LENGTH - 1] = 0;
@@ -732,7 +743,7 @@ namespace STB_LOG_NAMESPACE {
 	{
 		time_t timestamp = std::chrono::system_clock::to_time_t(t);
 		tm datetime;
-		localtime_s(&datetime, &timestamp);
+		LOCALTIME(datetime, timestamp);
 		if (strftime(m_buf, MAX_LENGTH, "%F %T", &datetime) == 0) {
 			m_buf[MAX_LENGTH - 1] = 0;
 		}
@@ -762,7 +773,7 @@ namespace STB_LOG_NAMESPACE {
 	
 	void CLogFileSystem::normpath(std::string & path)
 	{
-		std::replace(path.begin(), path.end(), reversed_seperator, seperator);
+		std::replace(path.begin(), path.end(), char(reversed_seperator), char(seperator));
 	}
 
 	void CLogFileSystem::split(const std::string &path, std::string &dir, std::string &file_name)
@@ -795,13 +806,13 @@ namespace STB_LOG_NAMESPACE {
 	bool CLogFileSystem::isdir(const std::string &path)
 	{
 		struct stat path_st;
-		return stat(path.c_str(), &path_st) == 0 && path_st.st_mode & _S_IFDIR;
+		return stat(path.c_str(), &path_st) == 0 && path_st.st_mode & S_IFDIR;
 	}
 
 	bool CLogFileSystem::isfile(const std::string &path)
 	{
 		struct stat path_st;
-		return stat(path.c_str(), &path_st) == 0 && path_st.st_mode & _S_IFREG;
+		return stat(path.c_str(), &path_st) == 0 && path_st.st_mode & S_IFREG;
 	}
 
 	bool CLogFileSystem::makedirs(const std::string &path)
