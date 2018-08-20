@@ -185,13 +185,38 @@ namespace STB_LOG_NAMESPACE {
 		free(raw);
 	}
 
+	typedef void (*LogWriter) (const void *tuple_data);
+
+	template<typename T1, size_t... I>
+	inline void print_tuple(const T1 &t, std::index_sequence<I...>)
+	{
+		printf(std::get<I>(t)...);
+	}
+
+	template<typename... Args>
+	struct GenericLogWriter 
+	{
+		static void write(const void *tuple_data) 
+		{
+			using tuple_type_t = std::tuple<const char*, Args...>;
+			constexpr size_t tuple_size = std::tuple_size<tuple_type_t>::value;
+			const tuple_type_t &t = *static_cast<const tuple_type_t*>(tuple_data);
+			print_tuple(t, std::make_index_sequence<tuple_size>());
+		}
+	};
+
 	using LogEventTime = std::chrono::system_clock::time_point;
 
 	struct LogEvent
 	{
 		int level;
 		unsigned capacity;
-		char channel[16];
+		union {
+			//char channel[16];
+			char channel[4];
+			unsigned size;
+		};
+		LogWriter writer;
 		LogEventTime time;
 		union {
 			char *buffer;
@@ -363,6 +388,22 @@ namespace STB_LOG_NAMESPACE {
 		CLogger& operator = (const CLogger&) = delete;
 		void write(int level, const void *data = nullptr, size_t size = 0);
 		void write(int level, const char* channel, const char *format, ...);
+		template<class... Args>
+		void generic_write(int level, const char* channel, const char *format, Args... args) {
+			using tuple_t = std::tuple<const char*, Args...>;
+			constexpr size_t size = sizeof(tuple_t);
+			uint64_t seq = _claim(1);
+			// write header
+			LogEvent *log = get_event(seq);
+			log->level = level;
+			log->size = size;
+			log->writer = &GenericLogWriter<Args...>::write;
+			// write data
+			char *buf = ensure_buffer(log, size);
+			new(buf) tuple_t{format, args...};
+			// publish event
+			log->publish.store(seq + 1);
+		}
 		void add_handler(CLogHandler *handler);
 		void remove_handler(CLogHandler *handler);
 		inline void close() {
@@ -541,7 +582,8 @@ namespace STB_LOG_NAMESPACE {
 		// write header
 		LogEvent *log = get_event(seq);
 		log->level = level;
-		log->channel[0] = 0;
+		log->size = size;
+		//log->channel[0] = 0;
 		// write data
 		if (data && size > 0) {
 			char *buf = ensure_buffer(log, size);

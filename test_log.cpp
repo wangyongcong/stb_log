@@ -238,12 +238,71 @@ void usage_test()
 	printf("success\n");
 }
 
+class CLogDispatcher : public CLogHandler
+{
+public:
+	CLogDispatcher(CLogger *logger=nullptr) 
+		: m_logger(logger) 
+		, m_buf(nullptr)
+	{
+		m_size = 1024;
+		m_buf = new char[m_size];
+	}
+
+	virtual void process_event(const LogEvent *log) override
+	{
+		const char *buf = LOG_EVENT_BUFFER(log);
+		if (log->size < m_size)
+			memcpy(m_buf, buf, log->size);
+	}
+
+	virtual void on_close() {
+		delete[] m_buf;
+		m_buf = nullptr;
+		m_size = 0;
+	}
+
+private:
+	CLogger * m_logger;
+	char *m_buf;
+	size_t m_size;
+};
+
+void through_put_test()
+{
+	constexpr int ITERATION = 100000;
+	constexpr char *CSTR = "test";
+	constexpr double CFLOAT = -3.1415926;
+	typedef std::chrono::high_resolution_clock Clock;
+	typedef std::chrono::microseconds TimeUnit;
+
+	printf("stb_log fast write test\n");
+
+	CLogHandler *handler = new CLogDispatcher();
+	start_handler_thread(handler, 1);
+	CLogger *logger = get_log_context()->logger;
+
+	auto t1 = Clock::now();
+	for (int i = 0; i < ITERATION; ++i)
+	{
+		logger->generic_write(StbLogLevel::LOG_INFO, "info", "%d %s %lf end\n", i, CSTR, CFLOAT);
+	}
+	auto t2 = Clock::now();
+	auto dt = std::chrono::duration_cast<TimeUnit>(t2 - t1);
+	auto result = dt.count();
+	printf("stb_log used time: %lld microseconds\n", result);
+
+	close_logger();
+	printf("success\n");
+}
+
 int main(int args, char *argv[])
 {
 	//thread_test();
 	//file_rotate_test();
 	//common_test();
-	usage_test();
+	//usage_test();
+	through_put_test();
 	getchar();
 	return 0;
 }
