@@ -11,6 +11,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <string>
 
 #ifdef USE_NAMESPACE
 #ifndef STB_LOG_NAMESPACE
@@ -224,7 +225,7 @@ namespace STB_LOG_NAMESPACE {
 		};
 		Sequence publish;
 	};
-	constexpr unsigned log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
+	constexpr size_t log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
 
 	typedef bool (*LogFilter)(const LogEvent*);
 
@@ -667,7 +668,7 @@ namespace STB_LOG_NAMESPACE {
 			log->buffer = new char[size];
 			log->capacity = size;
 		}
-		return log->capacity > log_event_fixed_buffer_size ? (char*)log->buffer : log->fixed_buffer;
+		return log->capacity > log_event_fixed_buffer_size ? log->buffer : log->fixed_buffer;
 	}
 
 	void CLogger::add_handler(CLogHandler * handler)

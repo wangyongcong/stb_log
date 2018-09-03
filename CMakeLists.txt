@@ -11,7 +11,8 @@ if(NOT NAMESPACE_NAME STREQUAL "")
 endif()
 
 add_definitions("-DLOG_SEVERITY_LEVEL=0")
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+
+#message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
 
 if(MSVC)
 	add_definitions("/Wall /WX /D_CRT_SECURE_NO_WARNINGS /W4 /wd4100 /wd4324")

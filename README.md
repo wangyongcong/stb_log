@@ -13,7 +13,7 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 ## Platform
 - [x] Windows
 - [ ] Linux
-- [ ] MacOS
+- [x] MacOS
 
 ## TODO
 - [x] Log message filtering.

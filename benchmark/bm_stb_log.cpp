@@ -27,14 +27,14 @@ public:
 		m_sum = 0;
 	}
 
-	virtual void process_event(const LogEvent *log) override
+	void process_event(const LogEvent *log) override
 	{
 		const char *message = LOG_EVENT_BUFFER(log);
 		int v = *(int*)message;
 		m_sum += v;
 	};
 	
-	virtual void on_close() override 
+	void on_close() override
 	{
 	};
 
@@ -44,7 +44,7 @@ private:
 
 long long bm_stb_latence()
 {
-	CSwapHandler *handler = new CSwapHandler();
+	auto *handler = new CSwapHandler();
 	start_handler_thread(handler, 1);
 	CLogger *logger = get_log_context()->logger;
 	assert(logger);

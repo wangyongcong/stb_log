@@ -256,7 +256,7 @@ public:
 			memcpy(m_buf, buf, log->size);
 	}
 
-	virtual void on_close() {
+	virtual void on_close() override {
 		delete[] m_buf;
 		m_buf = nullptr;
 		m_size = 0;
@@ -271,7 +271,7 @@ private:
 void through_put_test()
 {
 	constexpr int ITERATION = 100000;
-	constexpr char *CSTR = "test";
+	constexpr const char *CSTR = "test";
 	constexpr double CFLOAT = -3.1415926;
 	typedef std::chrono::high_resolution_clock Clock;
 	typedef std::chrono::microseconds TimeUnit;
