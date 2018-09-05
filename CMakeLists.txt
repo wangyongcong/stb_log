@@ -16,6 +16,8 @@ add_definitions("-DLOG_SEVERITY_LEVEL=0")
 
 if(MSVC)
 	add_definitions("/Wall /WX /D_CRT_SECURE_NO_WARNINGS /W4 /wd4100 /wd4324")
+else()
+	add_definitions("-Wno-braced-scalar-init")
 endif()
 
 SET(source
@@ -27,3 +29,5 @@ ADD_EXECUTABLE(
 	test_log
 	${source}
 )
+
+add_subdirectory(benchmark)
