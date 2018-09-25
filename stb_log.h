@@ -583,7 +583,7 @@ namespace STB_LOG_NAMESPACE {
 		// write header
 		LogEvent *log = get_event(seq);
 		log->level = level;
-		log->size = size;
+		log->size = static_cast<unsigned int>(size);
 		//log->channel[0] = 0;
 		// write data
 		if (data && size > 0) {

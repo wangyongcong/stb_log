@@ -24,6 +24,8 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 - [x] Log file rotation.
 - [x] Helper interface and macro.
 - [ ] Benchmark.
+- [ ] Reduce client side latence.
+- [ ] Optimize log event queue.
 
 ## Usage
 ```C++

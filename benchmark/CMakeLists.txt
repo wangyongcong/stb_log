@@ -13,7 +13,7 @@ set(source
 	benchmark.cpp
 	bm_stb_log.cpp
 	bm_nanolog.cpp
-)
+	bm_alloc.cpp)
 
 add_executable(
 	benchmark
