@@ -14,10 +14,6 @@ constexpr size_t ALLOC_COUNT = MEMORY_PER_THREAD / CHUNK_SIZE;
 
 std::atomic_int g_state(0);
 std::atomic_int g_alloc_end(0);
-std::condition_variable g_cv;
-std::mutex g_cv_m;
-//unsigned g_state = 0;
-
 
 struct Node
 {
@@ -29,7 +25,6 @@ void alloc_common()
 	while(1 != g_state.load(std::memory_order::memory_order_consume))
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
-	printf("start alloc...\n");
 	Node *head= nullptr;
 	Node *tmp = nullptr;
 	for(size_t i=0; i<ALLOC_COUNT; ++i)
@@ -43,7 +38,6 @@ void alloc_common()
 	while(1 != g_state.load(std::memory_order::memory_order_consume))
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
-	printf("start release...\n");
 	while(head) {
 		tmp = head;
 		head = head->_next;
@@ -53,15 +47,34 @@ void alloc_common()
 
 void alloc_with_local_heap()
 {
+	while(1 != g_state.load(std::memory_order::memory_order_consume))
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
+	Node *head = nullptr;
+	Node *tmp = nullptr;
+	char *buf = new char[CHUNK_SIZE * ALLOC_COUNT];
+	char *chunk = buf;
+	for(size_t i=0; i<ALLOC_COUNT; ++i, chunk += CHUNK_SIZE)
+	{
+		tmp = (Node*)chunk;
+		tmp->_next = head;
+		head = tmp;
+	}
+
+	g_alloc_end.fetch_add(1, std::memory_order_release);
+	while(1 != g_state.load(std::memory_order::memory_order_consume))
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+	delete [] buf;
 }
 
 long long bm_alloc()
 {
 	constexpr int thread_count  = 4;
-	auto alloc = &alloc_common;
+//	auto alloc = &alloc_common;
+	auto alloc = &alloc_with_local_heap;
 	std::thread th1(alloc), th2(alloc), th3(alloc), th4(alloc);
-	printf("starting...\n");
+	printf("thread: %lu, chunk: %lu, count: %lu, total: %lu\n", THREAD_COUNT, CHUNK_SIZE, ALLOC_COUNT, CHUNK_SIZE * ALLOC_COUNT);
 
 	auto t1 = Clock::now();
 	g_state.store(1, std::memory_order::memory_order_release);
@@ -91,3 +104,26 @@ long long bm_alloc()
 	return dt.count();
 }
 
+/*
+ * [alloc_common]
+ *   alloc end, used time: 21546 microseconds
+ *   free end, used time: 21375 microseconds
+ *   total time: 42921 microseconds
+ *
+ *   alloc end, used time: 24894 microseconds
+ *   free end, used time: 23388 microseconds
+ *   total time: 48282 microseconds
+ *
+ * [alloc_with_local_heap]
+ *   alloc end, used time: 22980 microseconds
+ *   free end, used time: 4788 microseconds
+ *   total time: 27768 microseconds
+ *
+ *   alloc end, used time: 21625 microseconds
+ *   free end, used time: 4005 microseconds
+ *   total time: 25630 microseconds
+ *
+ * result:
+ *   allocation is almost same. operation new may alloc memory from thread local heap with no competition.
+ *   free a big chunk is more faster than multiple free of small chunks
+ * */
