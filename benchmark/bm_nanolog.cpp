@@ -15,5 +15,5 @@ long long bm_nanolog()
 	auto result = dt.count();
 
 	LOG_INFO << "Nanolog used time: " << result << " microseconds";
-	return 0;
+	return result;
 }

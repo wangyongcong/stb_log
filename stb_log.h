@@ -23,16 +23,13 @@ namespace STB_LOG_NAMESPACE {
 	// --------------------------------
 	// library settings
 	// --------------------------------
-	enum StbLogLevel
-	{
+	enum StbLogLevel {
 		LOG_CRITICAL = 50,
 		LOG_ERROR = 40,
 		LOG_WARNING = 30,
 		LOG_INFO = 20,
 		LOG_DEBUG = 10,
 		LOG_NOTSET = 0,
-		// negative values are reserved for internal ctrl code
-		LOG_CODE_CLOSE = -1,
 	};
 
 #ifndef CACHELINE_SIZE
@@ -186,12 +183,14 @@ namespace STB_LOG_NAMESPACE {
 		free(raw);
 	}
 
+	using LogEventTime = std::chrono::system_clock::time_point;
+
 	typedef void (*LogWriter) (const void *tuple_data);
 
-	template<typename T1, size_t... I>
+	template<class T1, size_t... I>
 	inline void print_tuple(const T1 &t, std::index_sequence<I...>)
 	{
-		printf(std::get<I>(t)...);
+		printf(std::get<I+4>(t)...);
 	}
 
 	template<typename... Args>
@@ -206,25 +205,20 @@ namespace STB_LOG_NAMESPACE {
 		}
 	};
 
-	using LogEventTime = std::chrono::system_clock::time_point;
+	struct LogData {
+		mutable std::atomic<unsigned> ref;
+		int level;
+		LogEventTime time;
+		const char *channel;
+		LogWriter writer;
+	};
 
 	struct LogEvent
 	{
-		int level;
-		unsigned capacity;
-		union {
-			//char channel[16];
-			char channel[4];
-			unsigned size;
-		};
-		LogWriter writer;
-		LogEventTime time;
-		union {
-			char *buffer;
-			char fixed_buffer[1];
-		};
 		Sequence publish;
+		LogData *data;
 	};
+
 	constexpr size_t log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
 
 	typedef bool (*LogFilter)(const LogEvent*);
@@ -234,6 +228,7 @@ namespace STB_LOG_NAMESPACE {
 	class CLogTimeFormatter
 	{
 	public:
+		virtual ~CLogTimeFormatter() {}
 		virtual const char* format_time(LogEventTime t) = 0;
 	};
 
@@ -280,7 +275,7 @@ namespace STB_LOG_NAMESPACE {
 		CLogHandler();
 		virtual ~CLogHandler();
 		void process();
-		virtual void process_event(const LogEvent *log) {};
+		virtual void process_event(const LogData *data) {};
 		virtual void on_close() {};
 
 		inline void follow(CLogger *seq) {
@@ -313,7 +308,7 @@ namespace STB_LOG_NAMESPACE {
 	class CLogStdout : public CLogHandler 
 	{
 	public:
-		virtual void process_event(const LogEvent *log) override;
+		virtual void process_event(const LogData *log) override;
 	};
 
 	// platform dependence filesystem api
@@ -341,7 +336,7 @@ namespace STB_LOG_NAMESPACE {
 	public:
 		CLogFile(const char *filepath, bool append = false, int rotate_count = LOG_FILE_ROTATE_COUNT, size_t rotate_size=LOG_FILE_ROTATE_SIZE);
 		virtual ~CLogFile();
-		virtual void process_event(const LogEvent *log) override;
+		virtual void process_event(const LogData *log) override;
 		virtual void on_close() override;
 		inline bool is_ready() const {
 			return m_hfile != nullptr;
@@ -374,7 +369,7 @@ namespace STB_LOG_NAMESPACE {
 	{
 	public:
 		CLogDebugWindow();
-		virtual void process_event(const LogEvent *log) override;
+		virtual void process_event(const LogData *log) override;
 	private:
 		bool m_is_debugger;
 	};
@@ -387,28 +382,31 @@ namespace STB_LOG_NAMESPACE {
 		~CLogger();
 		CLogger(const CLogger&) = delete;
 		CLogger& operator = (const CLogger&) = delete;
-		void write(int level, const void *data = nullptr, size_t size = 0);
-		void write(int level, const char* channel, const char *format, ...);
 		template<class... Args>
 		void generic_write(int level, const char* channel, const char *format, Args... args) {
 			using tuple_t = std::tuple<const char*, Args...>;
-			constexpr size_t size = sizeof(tuple_t);
-			uint64_t seq = _claim(1);
-			// write header
-			LogEvent *log = get_event(seq);
-			log->level = level;
-			log->size = size;
-			log->writer = &GenericLogWriter<Args...>::write;
-			// write data
-			char *buf = ensure_buffer(log, size);
-			new(buf) tuple_t{format, args...};
+			constexpr size_t size = sizeof(LogData) + sizeof(tuple_t);
+			char *buf = new char[size];
+			new(buf + sizeof(LogData)) tuple_t{level, time, channel, format, args...};
+			LogData *data = reinterpret_cast<LogData*>(buf);
+			data->ref = 0;
+			data->level = level;
+			data->time = std::chrono::system_clock::now();
+			data->channel = channel;
+			data->writer = &GenericLogWriter<Args...>::write;
 			// publish event
+			uint64_t seq = _claim(1);
+			LogEvent *log = get_event(seq);
+			log->data = data;
 			log->publish.store(seq + 1);
 		}
 		void add_handler(CLogHandler *handler);
 		void remove_handler(CLogHandler *handler);
 		inline void close() {
-			write((int)StbLogLevel::LOG_CODE_CLOSE);
+			uint64_t seq = _claim(1);
+			LogEvent *log = get_event(seq);
+			log->data = nullptr;
+			log->publish.store(seq + 1);
 		}
 		inline const LogEvent* get_event(uint64_t seq) const {
 			return m_event_queue + (seq & m_size_mask);
@@ -416,7 +414,7 @@ namespace STB_LOG_NAMESPACE {
 		inline LogEvent* get_event(uint64_t seq) {
 			return m_event_queue + (seq & m_size_mask);
 		}
-		
+
 		static void* operator new(size_t size) {
 			return aligned_alloc(alignof(CLogger), size);
 		}
@@ -424,13 +422,12 @@ namespace STB_LOG_NAMESPACE {
 			aligned_free(ptr);
 		}
 		static size_t get_next_power2(size_t val);
-		static char* ensure_buffer(LogEvent *log, size_t size);
 
 	private:
 		uint64_t _claim(uint64_t count);
-		
+
 		LogEvent * m_event_queue;
-		unsigned m_size_mask;
+		size_t m_size_mask;
 		std::vector<CLogHandler*> m_handler_list;
 		uint64_t m_min_seq;
 		Sequence m_seq_claim;
@@ -443,9 +440,9 @@ namespace STB_LOG_NAMESPACE {
 
 #ifdef STB_LOG_IMPLEMENTATION
 
-#include <emmintrin.h>
+//#include <emmintrin.h>
 #include <sys/stat.h>
-#include <stdarg.h>
+#include <cstdarg>
 #include <ctime>
 #include <string>
 #include <algorithm>
@@ -534,7 +531,7 @@ namespace STB_LOG_NAMESPACE {
 		return val;
 	}
 
-// --------------------------------
+	// --------------------------------
 	// CLogger implementation
 	// --------------------------------
 
@@ -553,7 +550,7 @@ namespace STB_LOG_NAMESPACE {
 			ASSERT_ALIGNMENT(log, CACHELINE_SIZE);
 			ASSERT_ALIGNMENT(&log->publish, CACHELINE_SIZE);
 			// initialize LogEvent
-			log->capacity = log_event_fixed_buffer_size;
+			log->data = nullptr;
 			log->publish.set(0);
 		}
 		m_seq_claim.set(0);
@@ -569,65 +566,15 @@ namespace STB_LOG_NAMESPACE {
 		for (size_t i = 0; i <= m_size_mask; ++i) {
 			// clean up LogEvent
 			LogEvent *log = &m_event_queue[i];
-			if (log->capacity > log_event_fixed_buffer_size) {
-				delete[] log->buffer;
+			if (log->data) {
+				delete[] log->data;
+				log->data = nullptr;
 			}
 		}
 		aligned_free(m_event_queue);
 		m_event_queue = nullptr;
 	}
 
-	void CLogger::write(int level, const void *data, size_t size)
-	{
-		uint64_t seq = _claim(1);
-		// write header
-		LogEvent *log = get_event(seq);
-		log->level = level;
-		log->size = static_cast<unsigned int>(size);
-		//log->channel[0] = 0;
-		// write data
-		if (data && size > 0) {
-			char *buf = ensure_buffer(log, size);
-			memcpy(buf, data, size);
-		}
-		// publish event
-		log->publish.store(seq + 1);
-	}
-
-	void CLogger::write(int level, const char * channel, const char * format, ...)
-	{
-		va_list args;
-		va_start(args, format);
-		int length = vsnprintf(0, 0, format, args);
-		va_end(args);
-		if (length <= 0)
-			return;
-		uint64_t seq = _claim(1);
-		// write header
-		LogEvent *log = get_event(seq);
-		log->level = level;
-		log->time = std::chrono::system_clock::now();
-		constexpr unsigned channel_size = sizeof(log->channel) - 1;
-		if (strlen(channel) <= channel_size)
-			strcpy(log->channel, channel);
-		else {
-			strncpy(log->channel, channel, channel_size);
-			log->channel[channel_size] = 0;
-		}
-		// write data
-		char *buf = ensure_buffer(log, length + 1);
-		va_start(args, format);
-		length = vsnprintf(buf, log->capacity, format, args);
-		va_end(args);
-		if (length == -1) {
-			log->level = StbLogLevel::LOG_ERROR;
-			const char *err = "Logging fail";
-			buf = ensure_buffer(log, strlen(err) + 1);
-			strcpy(buf, err);
-		}
-		// publish event
-		log->publish.store(seq + 1);
-	}
 
 	uint64_t CLogger::_claim(uint64_t count) 
 	{
@@ -636,13 +583,14 @@ namespace STB_LOG_NAMESPACE {
 			return request_seq;
 		}
 		uint64_t min_seq = ULLONG_MAX, seq = 0;
+		// TODO: need a better spin lock
 		for (CLogHandler *handler : m_handler_list) {
 			seq = handler->get_sequence();
 			while (request_seq > seq + m_size_mask) {
-				_mm_pause(); // pause, about 12ns
-				seq = handler->get_sequence();
-				if (request_seq <= seq + m_size_mask)
-					break;
+//				_mm_pause(); // pause, about 12ns
+//				seq = handler->get_sequence();
+//				if (request_seq <= seq + m_size_mask)
+//					break;
 				// if no waiting threads, about 113ns
 				// else lead to thread switching
 				std::this_thread::yield();
@@ -654,21 +602,6 @@ namespace STB_LOG_NAMESPACE {
 		}
 		m_min_seq = seq;
 		return request_seq;
-	}
-
-	char * CLogger::ensure_buffer(LogEvent * log, size_t size)
-	{
-		if (log->capacity < size) {
-			if (log->capacity > log_event_fixed_buffer_size) {
-				delete[] log->buffer;
-			}
-			if (size < 256 && (size & (size - 1)) != 0) {
-				size = get_next_power2(size);
-			}
-			log->buffer = new char[size];
-			log->capacity = size;
-		}
-		return log->capacity > log_event_fixed_buffer_size ? log->buffer : log->fixed_buffer;
 	}
 
 	void CLogger::add_handler(CLogHandler * handler)
@@ -716,33 +649,38 @@ namespace STB_LOG_NAMESPACE {
 		assert(m_logger);
 		uint64_t seq = m_seq.get(), pub;
 		const LogEvent *log;
+		const LogData *data = nullptr;
+		std::vector<const LogData*> log_entries;
+		constexpr unsigned batch_size = 64;
+		log_entries.reserve(batch_size);
 		while (!m_closed) {
 			log = m_logger->get_event(seq);
 			pub = log->publish.load();
 			if (pub > seq) {
-				if (log->level == StbLogLevel::LOG_CODE_CLOSE) {
-					// process system event
+				data = log->data;
+				if(!data) {
 					m_closed = true;
-					on_close();
 				}
-				else { // process user event
-					bool b = true;
-					for (auto filter : m_filters) {
-						if (!filter(log)) {
-							b = false;
-							break;
-						}
-					}
-					if (b)
-						process_event(log);
+				else {
+					data->ref.fetch_add(1, std::memory_order_relaxed);
+					log_entries.push_back(data);
 				}
 				m_seq.store(pub);
 				seq += 1;
 				assert(pub == seq);
-				continue;
+				if(log_entries.size() < batch_size)
+					continue;
 			}
 			break;
 		}
+		for(auto iter: log_entries) {
+			process_event(iter);
+			if(1 == iter->ref.fetch_sub(1)) {
+				delete [] (char*)iter;
+			}
+		}
+		if(m_closed)
+			on_close();
 	}
 
 	// --------------------------------
@@ -797,17 +735,17 @@ namespace STB_LOG_NAMESPACE {
 	// Standard logger implementation
 	// --------------------------------
 
-	void CLogStdout::process_event(const LogEvent * log)
+	void CLogStdout::process_event(const LogData * log)
 	{
-		if (m_formatter) {
-			const char *stime = m_formatter->format_time(log->time);
-			printf("[%s] ", stime);
-		}
-		if (log->channel[0] != 0) {
-			printf("[%s] ", log->channel);
-		}
-		const char *message = LOG_EVENT_BUFFER(log);
-		printf("%s\n", message);
+//		if (m_formatter) {
+//			const char *stime = m_formatter->format_time(log->time);
+//			printf("[%s] ", stime);
+//		}
+//		if (log->channel[0] != 0) {
+//			printf("[%s] ", log->channel);
+//		}
+//		const char *message = LOG_EVENT_BUFFER(log);
+//		printf("%s\n", message);
 	}
 
 	// --------------------------------
@@ -910,21 +848,21 @@ namespace STB_LOG_NAMESPACE {
 		}
 	}
 
-	void CLogFile::process_event(const LogEvent *log)
+	void CLogFile::process_event(const LogData *log)
 	{
-		if (m_formatter) {
-			const char *stime = m_formatter->format_time(log->time);
-			m_cur_size += fprintf(m_hfile, "[%s] ", stime);
-		}
-		if (log->channel[0] != 0) {
-			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
-		}
-		const char *message = LOG_EVENT_BUFFER(log);
-		m_cur_size += fprintf(m_hfile, "%s\n", message);
-		fflush(m_hfile);
-		if (m_cur_size >= m_rotate_size) {
-			rotate();
-		}
+//		if (m_formatter) {
+//			const char *stime = m_formatter->format_time(log->time);
+//			m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+//		}
+//		if (log->channel[0] != 0) {
+//			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
+//		}
+//		const char *message = LOG_EVENT_BUFFER(log);
+//		m_cur_size += fprintf(m_hfile, "%s\n", message);
+//		fflush(m_hfile);
+//		if (m_cur_size >= m_rotate_size) {
+//			rotate();
+//		}
 	}
 
 	void CLogFile::on_close()
@@ -980,7 +918,7 @@ namespace STB_LOG_NAMESPACE {
 		m_is_debugger = IsDebuggerPresent();
 	}
 
-	void CLogDebugWindow::process_event(const LogEvent * log)
+	void CLogDebugWindow::process_event(const LogData * log)
 	{
 		if (!m_is_debugger)
 			return;
