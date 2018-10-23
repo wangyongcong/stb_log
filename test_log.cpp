@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <ctime>
 #include <random>
+#include <cstdarg>
 #define STB_LOG_IMPLEMENTATION
 #include "stb_log.h"
 
@@ -11,15 +12,16 @@ using namespace STB_LOG_NAMESPACE;
 class CLogWriter: public CLogHandler
 {
 public:
-	CLogWriter(int max_size, std::atomic<unsigned> *counter)
+	CLogWriter(size_t max_size, std::atomic<unsigned> *counter)
 		: m_counter(counter)
 	{
 		m_logs.reserve(max_size);
 	}
 
-	virtual void process_event(const LogEvent *log) override
+	virtual void process_event(const LogData *log) override
 	{
-		m_logs.push_back(*(int*)(log->fixed_buffer));
+		unsigned index = *reinterpret_cast<const unsigned*>((const char*)log + sizeof(LogData));
+		m_logs.push_back(index);
 		m_counter->fetch_sub(1, std::memory_order::memory_order_relaxed);
 	}
 
@@ -42,6 +44,8 @@ void thread_test()
 		LOG_DEBUG,
 		LOG_INFO,
 	};
+	const char* channel_name[channel_count] = {"DEBUG", "INFO"};
+
 	constexpr int max_write_count = 100000;
 
 	alignas(CACHELINE_SIZE) std::atomic<unsigned> ch1_counter(1);
@@ -53,11 +57,11 @@ void thread_test()
 	};
 
 	CLogWriter *h1 = new CLogWriter(max_write_count, &max_read_count);
-	h1->add_filter([](const LogEvent* log) -> bool {
+	h1->set_filter([](const LogData* log) -> bool {
 		return log->level == LOG_DEBUG;
 	});
 	CLogWriter *h2 = new CLogWriter(max_write_count, &max_read_count);
-	h2->add_filter([](const LogEvent* log) -> bool {
+	h2->set_filter([](const LogData* log) -> bool {
 		return log->level == LOG_INFO;
 	});
 	CLogger *logger = new CLogger(256);
@@ -84,7 +88,7 @@ void thread_test()
 		{
 			auto i = random() % channel_count;
 			auto c = channel_counter[i]->fetch_add(1, std::memory_order::memory_order_relaxed);
-			logger->write(channel_level[i], &c, sizeof(c));
+			logger->write(channel_level[i], channel_name[i], c);
 		}
 	});
 
@@ -94,7 +98,7 @@ void thread_test()
 		{
 			auto i = random() % channel_count;
 			auto c = channel_counter[i]->fetch_add(1, std::memory_order::memory_order_relaxed);
-			logger->write(channel_level[i], &c, sizeof(c));
+			logger->write(channel_level[i], channel_name[i], c);
 		}
 	});
 
@@ -238,71 +242,12 @@ void usage_test()
 	printf("success\n");
 }
 
-class CLogDispatcher : public CLogHandler
-{
-public:
-	CLogDispatcher(CLogger *logger=nullptr) 
-		: m_logger(logger) 
-		, m_buf(nullptr)
-	{
-		m_size = 1024;
-		m_buf = new char[m_size];
-	}
-
-	virtual void process_event(const LogEvent *log) override
-	{
-		const char *buf = LOG_EVENT_BUFFER(log);
-		if (log->size < m_size)
-			memcpy(m_buf, buf, log->size);
-	}
-
-	virtual void on_close() override {
-		delete[] m_buf;
-		m_buf = nullptr;
-		m_size = 0;
-	}
-
-private:
-	CLogger * m_logger;
-	char *m_buf;
-	size_t m_size;
-};
-
-void through_put_test()
-{
-	constexpr int ITERATION = 100000;
-	constexpr const char *CSTR = "test";
-	constexpr double CFLOAT = -3.1415926;
-	typedef std::chrono::high_resolution_clock Clock;
-	typedef std::chrono::microseconds TimeUnit;
-
-	printf("stb_log fast write test\n");
-
-	CLogHandler *handler = new CLogDispatcher();
-	start_handler_thread(handler, 1);
-	CLogger *logger = get_log_context()->logger;
-
-	auto t1 = Clock::now();
-	for (int i = 0; i < ITERATION; ++i)
-	{
-		logger->generic_write(StbLogLevel::LOG_INFO, "info", "%d %s %lf end\n", i, CSTR, CFLOAT);
-	}
-	auto t2 = Clock::now();
-	auto dt = std::chrono::duration_cast<TimeUnit>(t2 - t1);
-	auto result = dt.count();
-	printf("stb_log used time: %lld microseconds\n", result);
-
-	close_logger();
-	printf("success\n");
-}
-
 int main(int args, char *argv[])
 {
-	//thread_test();
-	//file_rotate_test();
-	//common_test();
-	//usage_test();
-	through_put_test();
-	getchar();
+	thread_test();
+//	file_rotate_test();
+//	common_test();
+//	usage_test();
+//	getchar();
 	return 0;
 }

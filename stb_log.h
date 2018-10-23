@@ -185,23 +185,24 @@ namespace STB_LOG_NAMESPACE {
 
 	using LogEventTime = std::chrono::system_clock::time_point;
 
-	typedef void (*LogWriter) (const void *tuple_data);
+	typedef int (*TupleAccessor) (const char*, ...);
+	typedef void (*LogWriter) (TupleAccessor, const void *tuple_data);
 
 	template<class T1, size_t... I>
-	inline void print_tuple(const T1 &t, std::index_sequence<I...>)
+	inline void unpack_tuple(TupleAccessor accessor, const T1 &t, std::index_sequence<I...>)
 	{
-		printf(std::get<I+4>(t)...);
+		accessor(std::get<I>(t)...);
 	}
 
 	template<typename... Args>
 	struct GenericLogWriter 
 	{
-		static void write(const void *tuple_data) 
+		static void write(TupleAccessor accessor, const void *tuple_data)
 		{
 			using tuple_type_t = std::tuple<const char*, Args...>;
 			constexpr size_t tuple_size = std::tuple_size<tuple_type_t>::value;
 			const tuple_type_t &t = *static_cast<const tuple_type_t*>(tuple_data);
-			print_tuple(t, std::make_index_sequence<tuple_size>());
+			unpack_tuple(accessor, t, std::make_index_sequence<tuple_size>());
 		}
 	};
 
@@ -219,9 +220,9 @@ namespace STB_LOG_NAMESPACE {
 		LogData *data;
 	};
 
-	constexpr size_t log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
+//	constexpr size_t log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
 
-	typedef bool (*LogFilter)(const LogEvent*);
+	typedef bool (*LogFilter)(const LogData*);
 
 	class CLogger;
 
@@ -287,8 +288,8 @@ namespace STB_LOG_NAMESPACE {
 		inline uint64_t acquire_sequence() const {
 			return m_seq.load();
 		}
-		inline void add_filter(LogFilter filter) {
-			m_filters.push_back(filter);
+		inline void set_filter(LogFilter filter) {
+			m_filter = filter;
 		}
 		inline bool is_closed() const {
 			return m_closed;
@@ -299,7 +300,7 @@ namespace STB_LOG_NAMESPACE {
 
 	protected:
 		CLogger* m_logger;
-		std::vector<LogFilter> m_filters;
+		LogFilter m_filter;
 		std::unique_ptr<CLogTimeFormatter> m_formatter;
 		bool m_closed;
 		Sequence m_seq;
@@ -382,14 +383,15 @@ namespace STB_LOG_NAMESPACE {
 		~CLogger();
 		CLogger(const CLogger&) = delete;
 		CLogger& operator = (const CLogger&) = delete;
+
 		template<class... Args>
-		void generic_write(int level, const char* channel, const char *format, Args... args) {
+		void write(int level, const char* channel, const char *format, Args... args) {
 			using tuple_t = std::tuple<const char*, Args...>;
 			constexpr size_t size = sizeof(LogData) + sizeof(tuple_t);
 			char *buf = new char[size];
-			new(buf + sizeof(LogData)) tuple_t{level, time, channel, format, args...};
+			new(buf + sizeof(LogData)) tuple_t{format, args...};
 			LogData *data = reinterpret_cast<LogData*>(buf);
-			data->ref = 0;
+			data->ref = 1;
 			data->level = level;
 			data->time = std::chrono::system_clock::now();
 			data->channel = channel;
@@ -397,9 +399,36 @@ namespace STB_LOG_NAMESPACE {
 			// publish event
 			uint64_t seq = _claim(1);
 			LogEvent *log = get_event(seq);
+			if(log->data) {
+				if(1 == log->data->ref.fetch_sub(1))
+					delete [] (char*)log->data;
+			}
 			log->data = data;
 			log->publish.store(seq + 1);
 		}
+
+		template<class T>
+		void write(int level, const char* channel, const T &obj) {
+			constexpr size_t size = sizeof(LogData) + sizeof(obj);
+			char *buf = new char[size];
+			LogData *data = reinterpret_cast<LogData*>(buf);
+			data->ref = 1;
+			data->level = level;
+			data->time = std::chrono::system_clock::now();
+			data->channel = channel;
+			data->writer = nullptr;
+			new(buf + sizeof(LogData)) T(obj);
+			// publish event
+			uint64_t seq = _claim(1);
+			LogEvent *log = get_event(seq);
+			if(log->data) {
+				if(1 == log->data->ref.fetch_sub(1))
+					delete [] (char*)log->data;
+			}
+			log->data = data;
+			log->publish.store(seq + 1);
+		}
+
 		void add_handler(CLogHandler *handler);
 		void remove_handler(CLogHandler *handler);
 		inline void close() {
@@ -600,7 +629,7 @@ namespace STB_LOG_NAMESPACE {
 			if (seq < min_seq)
 				min_seq = seq;
 		}
-		m_min_seq = seq;
+		m_min_seq = min_seq;
 		return request_seq;
 	}
 
@@ -628,6 +657,7 @@ namespace STB_LOG_NAMESPACE {
 
 	CLogHandler::CLogHandler()
 		: m_logger(nullptr)
+		, m_filter(nullptr)
 		, m_formatter(nullptr)
 		, m_closed(false)
 	{
@@ -661,7 +691,7 @@ namespace STB_LOG_NAMESPACE {
 				if(!data) {
 					m_closed = true;
 				}
-				else {
+				else if(!m_filter or m_filter(data)){
 					data->ref.fetch_add(1, std::memory_order_relaxed);
 					log_entries.push_back(data);
 				}
@@ -737,15 +767,15 @@ namespace STB_LOG_NAMESPACE {
 
 	void CLogStdout::process_event(const LogData * log)
 	{
-//		if (m_formatter) {
-//			const char *stime = m_formatter->format_time(log->time);
-//			printf("[%s] ", stime);
-//		}
-//		if (log->channel[0] != 0) {
-//			printf("[%s] ", log->channel);
-//		}
-//		const char *message = LOG_EVENT_BUFFER(log);
-//		printf("%s\n", message);
+		if (m_formatter) {
+			const char *stime = m_formatter->format_time(log->time);
+			printf("[%s]", stime);
+		}
+		if (log->channel[0] != 0) {
+			printf(" [%s]", log->channel);
+		}
+		const char *message = (const char*)log + sizeof(LogData);
+		log->writer(printf, message);
 	}
 
 	// --------------------------------
