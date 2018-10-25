@@ -397,14 +397,16 @@ namespace STB_LOG_NAMESPACE {
 			data->channel = channel;
 			data->writer = &GenericLogWriter<Args...>::write;
 			// publish event
-			uint64_t seq = _claim(1);
-			LogEvent *log = get_event(seq);
-			if(log->data) {
-				if(1 == log->data->ref.fetch_sub(1))
-					delete [] (char*)log->data;
-			}
+			auto seq = _claim(1);
+			auto log = get_event(seq);
+			auto prev = log->data;
 			log->data = data;
 			log->publish.store(seq + 1);
+			// release reference to prev data entry
+			if(prev) {
+				if(1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel))
+					delete [] (char*)prev;
+			}
 		}
 
 		template<class T>
@@ -419,14 +421,16 @@ namespace STB_LOG_NAMESPACE {
 			data->writer = nullptr;
 			new(buf + sizeof(LogData)) T(obj);
 			// publish event
-			uint64_t seq = _claim(1);
-			LogEvent *log = get_event(seq);
-			if(log->data) {
-				if(1 == log->data->ref.fetch_sub(1))
-					delete [] (char*)log->data;
-			}
+			auto seq = _claim(1);
+			auto *log = get_event(seq);
+			auto prev = log->data;
 			log->data = data;
 			log->publish.store(seq + 1);
+			// release reference to prev data entry
+			if(prev) {
+				if(1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel))
+					delete [] (char*)prev;
+			}
 		}
 
 		void add_handler(CLogHandler *handler);
@@ -692,7 +696,7 @@ namespace STB_LOG_NAMESPACE {
 					m_closed = true;
 				}
 				else if(!m_filter or m_filter(data)){
-					data->ref.fetch_add(1, std::memory_order_relaxed);
+					data->ref += 1;
 					log_entries.push_back(data);
 				}
 				m_seq.store(pub);
@@ -705,7 +709,7 @@ namespace STB_LOG_NAMESPACE {
 		}
 		for(auto iter: log_entries) {
 			process_event(iter);
-			if(1 == iter->ref.fetch_sub(1)) {
+			if(1 == iter->ref.fetch_sub(1, std::memory_order_acq_rel)) {
 				delete [] (char*)iter;
 			}
 		}
