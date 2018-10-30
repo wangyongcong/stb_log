@@ -143,12 +143,12 @@ void common_test()
 #if defined(_WIN32) || defined(_WIN64)
 		new CLogDebugWindow(),
 #endif
-		new CLogFile("log/test.log"),
+//		new CLogFile("log/test.log"),
 	};
 	for (auto h: handlers)
 		logger->add_handler(h);
 	handlers[0]->set_time_formatter(std::make_unique<CMsTimeFormatter>());
-	handlers[2]->set_time_formatter(std::make_unique<CDateTimeFormatter>());
+//	handlers[2]->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 
 	std::thread th1([&] {
 		while (!handlers[0]->is_closed()) {
@@ -157,19 +157,19 @@ void common_test()
 		}
 	});
 
-	std::thread th2([&] {
-		while (!handlers[1]->is_closed()) {
-			handlers[1]->process();
-			std::this_thread::yield();
-		}
-	});
-
-	std::thread th3([&] {
-		while (!handlers[2]->is_closed()) {
-			handlers[2]->process();
-			std::this_thread::yield();
-		}
-	});
+//	std::thread th2([&] {
+//		while (!handlers[1]->is_closed()) {
+//			handlers[1]->process();
+//			std::this_thread::yield();
+//		}
+//	});
+//
+//	std::thread th3([&] {
+//		while (!handlers[2]->is_closed()) {
+//			handlers[2]->process();
+//			std::this_thread::yield();
+//		}
+//	});
 
 	logger->write(LOG_DEBUG, "DEBUG", "hello, world");
 	logger->write(LOG_INFO, "INFO", "common message");
@@ -177,16 +177,15 @@ void common_test()
 	logger->write(LOG_ERROR, "ERROR", "it's an error");
 	logger->write(LOG_CRITICAL, "CRITICAL", "fatal error!");
 
-	for (int i = 0; i < 1000; ++i) {
+	for (int i = 0; i < 100; ++i) {
 		logger->write(LOG_INFO, "TEST", "message[%d]", i);
 	}
-	logger->write(LOG_INFO, "TEST", "END");
 
 	// close and exit
 	logger->close();
 	th1.join();
-	th2.join();
-	th3.join();
+//	th2.join();
+//	th3.join();
 	
 	// cleanup up
 	for (auto h : handlers)
@@ -244,9 +243,9 @@ void usage_test()
 
 int main(int args, char *argv[])
 {
-	thread_test();
+//	thread_test();
 //	file_rotate_test();
-//	common_test();
+	common_test();
 //	usage_test();
 //	getchar();
 	return 0;
