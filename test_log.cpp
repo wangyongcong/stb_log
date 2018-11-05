@@ -140,15 +140,15 @@ void common_test()
 	CLogger *logger = new CLogger(256);
 	CLogHandler *handlers[] = {
 		new CLogStdout(),
+		new CLogFile("log/test.log"),
 #if defined(_WIN32) || defined(_WIN64)
 		new CLogDebugWindow(),
 #endif
-//		new CLogFile("log/test.log"),
 	};
 	for (auto h: handlers)
 		logger->add_handler(h);
 	handlers[0]->set_time_formatter(std::make_unique<CMsTimeFormatter>());
-//	handlers[2]->set_time_formatter(std::make_unique<CDateTimeFormatter>());
+	handlers[1]->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 
 	std::thread th1([&] {
 		while (!handlers[0]->is_closed()) {
@@ -157,19 +157,21 @@ void common_test()
 		}
 	});
 
-//	std::thread th2([&] {
-//		while (!handlers[1]->is_closed()) {
-//			handlers[1]->process();
-//			std::this_thread::yield();
-//		}
-//	});
-//
-//	std::thread th3([&] {
-//		while (!handlers[2]->is_closed()) {
-//			handlers[2]->process();
-//			std::this_thread::yield();
-//		}
-//	});
+	std::thread th2([&] {
+		while (!handlers[1]->is_closed()) {
+			handlers[1]->process();
+			std::this_thread::yield();
+		}
+	});
+
+#if defined(_WIN32) || defined(_WIN64)
+	std::thread th3([&] {
+		while (!handlers[2]->is_closed()) {
+			handlers[2]->process();
+			std::this_thread::yield();
+		}
+	});
+#endif
 
 	logger->write(LOG_DEBUG, "DEBUG", "hello, world");
 	logger->write(LOG_INFO, "INFO", "common message");
@@ -184,9 +186,11 @@ void common_test()
 	// close and exit
 	logger->close();
 	th1.join();
-//	th2.join();
-//	th3.join();
-	
+	th2.join();
+#if defined(_WIN32) || defined(_WIN64)
+	th3.join();
+#endif
+
 	// cleanup up
 	for (auto h : handlers)
 		delete h;

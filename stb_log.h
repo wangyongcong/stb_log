@@ -29,7 +29,6 @@ enum StbLogLevel {
 	LOG_WARNING = 30,
 	LOG_INFO = 20,
 	LOG_DEBUG = 10,
-	LOG_NOTSET = 0,
 };
 
 #ifndef CACHELINE_SIZE
@@ -189,7 +188,8 @@ using LogEventTime = std::chrono::system_clock::time_point;
 
 struct LogData;
 
-typedef void (*LogWriter)(const LogData *log, const void *context);
+typedef void (*LogWriter)(const LogData *log, void *context);
+typedef void (*LogDeleter)(LogData *log);
 
 enum ELogWriterType {
 	LOG_WRITER_STDOUT,
@@ -203,8 +203,14 @@ struct LogData {
 	LogEventTime time;
 	const char *channel;
 	const LogWriter *writer;
+	LogDeleter deleter;
 };
 
+template<class T>
+void generic_release(LogData *log) {
+	auto ptr = reinterpret_cast<T*>((char*)log + sizeof(LogData));
+	ptr->~T();
+}
 
 template<class F, size_t... Is>
 constexpr auto index_apply_impl(F f, std::index_sequence<Is...>) {
@@ -221,7 +227,13 @@ struct GenericLogWriter {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-security"
 
-	static void write_stdout(const LogData *log, const void *context) {
+	static void release(LogData *log) {
+		using tuple_t = std::tuple<const char *, Args...>;
+		auto t = reinterpret_cast<tuple_t *>((char *) log + sizeof(LogData));
+		t->~tuple_t();
+	}
+
+	static void write_stdout(const LogData *log, void *context) {
 		using tuple_t = std::tuple<const char *, Args...>;
 		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
 		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
@@ -230,8 +242,14 @@ struct GenericLogWriter {
 		});
 	}
 
-	static void write_file(const LogData *log, const void *context) {
-
+	static void write_file(const LogData *log, void *context) {
+		using tuple_t = std::tuple<const char *, Args...>;
+		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
+		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
+		auto c = (std::pair<FILE*, size_t>*)context;
+		index_apply<tuple_size>([t, c](auto... Is) {
+			c->second = fprintf(c->first, std::get<Is>(*t)...);
+		});
 	}
 
 #pragma clang diagnostic pop
@@ -451,6 +469,10 @@ public:
 		data->time = std::chrono::system_clock::now();
 		data->channel = channel;
 		data->writer = GenericLogWriter<Args...>::s_writer_table;
+		if(std::is_pod<tuple_t>::value)
+			data->deleter = nullptr;
+		else
+			data->deleter = GenericLogWriter<Args...>::release;
 		// publish event
 		auto seq = _claim(1);
 		auto log = get_event(seq);
@@ -459,8 +481,11 @@ public:
 		log->publish.store(seq + 1);
 		// release reference to prev data entry
 		if (prev) {
-			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel))
+			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel)) {
+				if (prev->deleter)
+					prev->deleter(prev);
 				delete[] (char *) prev;
+			}
 		}
 	}
 
@@ -474,6 +499,10 @@ public:
 		data->time = std::chrono::system_clock::now();
 		data->channel = channel;
 		data->writer = nullptr;
+		if(std::is_pod<T>::value)
+			data->deleter = nullptr;
+		else
+			data->deleter = generic_release<T>;
 		new(buf + sizeof(LogData)) T(obj);
 		// publish event
 		auto seq = _claim(1);
@@ -484,6 +513,8 @@ public:
 		// release reference to prev data entry
 		if (prev) {
 			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel))
+				if(prev->deleter)
+					prev->deleter(prev);
 				delete[] (char *) prev;
 		}
 	}
@@ -671,10 +702,10 @@ uint64_t CLogger::_claim(uint64_t count) {
 	for (CLogHandler *handler : m_handler_list) {
 		seq = handler->get_sequence();
 		while (request_seq > seq + m_size_mask) {
-//				_mm_pause(); // pause, about 12ns
-//				seq = handler->get_sequence();
-//				if (request_seq <= seq + m_size_mask)
-//					break;
+//			_mm_pause(); // pause, about 12ns
+//			seq = handler->get_sequence();
+//			if (request_seq <= seq + m_size_mask)
+//				break;
 			// if no waiting threads, about 113ns
 			// else lead to thread switching
 			std::this_thread::yield();
@@ -863,10 +894,7 @@ bool CLogFileSystem::isfile(const std::string &path) {
 bool CLogFileSystem::makedirs(const std::string &path) {
 	std::string cmd = "mkdir ";
 	cmd += path;
-	if (std::system(cmd.c_str())) {
-		return false;
-	}
-	return true;
+	return std::system(cmd.c_str()) == 0;
 }
 
 // --------------------------------
@@ -906,19 +934,21 @@ CLogFile::~CLogFile() {
 }
 
 void CLogFile::process_event(const LogData *log) {
-//		if (m_formatter) {
-//			const char *stime = m_formatter->format_time(log->time);
-//			m_cur_size += fprintf(m_hfile, "[%s] ", stime);
-//		}
-//		if (log->channel[0] != 0) {
-//			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
-//		}
-//		const char *message = LOG_EVENT_BUFFER(log);
-//		m_cur_size += fprintf(m_hfile, "%s\n", message);
-//		fflush(m_hfile);
-//		if (m_cur_size >= m_rotate_size) {
-//			rotate();
-//		}
+		if (m_formatter) {
+			const char *stime = m_formatter->format_time(log->time);
+			m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+		}
+		if (log->channel[0] != 0) {
+			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
+		}
+		std::pair<FILE*, size_t> context{m_hfile, 0};
+		log->writer[LOG_WRITER_FILE](log, &context);
+		m_cur_size += context.second + 1;
+		fprintf(m_hfile, "\n");
+		fflush(m_hfile);
+		if (m_cur_size >= m_rotate_size) {
+			rotate();
+		}
 }
 
 void CLogFile::on_close() {
