@@ -179,9 +179,9 @@ void common_test()
 	logger->write(LOG_ERROR, "ERROR", "it's an error");
 	logger->write(LOG_CRITICAL, "CRITICAL", "fatal error!");
 
-	for (int i = 0; i < 100; ++i) {
-		logger->write(LOG_INFO, "TEST", "message[%d]", i);
-	}
+	// for (int i = 0; i < 100; ++i) {
+	// 	logger->write(LOG_INFO, "TEST", "message[%d]", i);
+	// }
 
 	// close and exit
 	logger->close();

@@ -246,7 +246,7 @@ struct GenericLogWriter {
 		using tuple_t = std::tuple<const char *, Args...>;
 		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
 		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
-		auto c = (std::pair<FILE*, size_t>*)context;
+		auto c = (std::pair<FILE*, long>*)context;
 		index_apply<tuple_size>([t, c](auto... Is) {
 			c->second = fprintf(c->first, std::get<Is>(*t)...);
 		});
@@ -565,7 +565,7 @@ private:
 
 #ifdef STB_LOG_IMPLEMENTATION
 
-//#include <emmintrin.h>
+#include <emmintrin.h>
 #include <sys/stat.h>
 #include <cstdarg>
 #include <ctime>
@@ -627,6 +627,7 @@ bool start_debug_logger(millisecond_t sleep_time) {
 	start_handler_thread(handler, sleep_time);
 	return true;
 #else
+	(void)sleep_time;
 	return false;
 #endif
 }
@@ -698,17 +699,33 @@ uint64_t CLogger::_claim(uint64_t count) {
 		return request_seq;
 	}
 	uint64_t min_seq = ULLONG_MAX, seq = 0;
+	constexpr unsigned YIELD = 1;
+	constexpr unsigned SLEEP = 2;
+	constexpr unsigned SPIN = 10;
+	unsigned spin_count = 0;
+	unsigned loop_count = 0;
+	// millisecond_t ms = 1;
 	// TODO: need a better spin lock
 	for (CLogHandler *handler : m_handler_list) {
 		seq = handler->get_sequence();
 		while (request_seq > seq + m_size_mask) {
-//			_mm_pause(); // pause, about 12ns
-//			seq = handler->get_sequence();
-//			if (request_seq <= seq + m_size_mask)
-//				break;
-			// if no waiting threads, about 113ns
-			// else lead to thread switching
-			std::this_thread::yield();
+			if(loop_count < YIELD) {
+				for (spin_count = SPIN; spin_count > 0; --spin_count)
+					_mm_pause(); // pause, about 12ns
+			}
+			else {
+				unsigned yield_count = loop_count - YIELD;
+				if(SLEEP > 0 && (yield_count % SLEEP == SLEEP - 1)) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+					loop_count = 0;
+				}
+				else {
+					// if no waiting threads, about 113ns
+					// else lead to thread switching
+					std::this_thread::yield();
+				}
+			}
+			++loop_count;
 			seq = handler->get_sequence();
 		}
 		seq = handler->acquire_sequence();
@@ -941,7 +958,7 @@ void CLogFile::process_event(const LogData *log) {
 		if (log->channel[0] != 0) {
 			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
 		}
-		std::pair<FILE*, size_t> context{m_hfile, 0};
+		std::pair<FILE*, long> context{m_hfile, 0};
 		log->writer[LOG_WRITER_FILE](log, &context);
 		m_cur_size += context.second + 1;
 		fprintf(m_hfile, "\n");

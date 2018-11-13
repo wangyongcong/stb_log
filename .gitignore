@@ -36,3 +36,4 @@ cmake-build*/
 cmake-xcode*/
 .idea
 .vscode
+log
