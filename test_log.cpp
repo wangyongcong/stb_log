@@ -147,6 +147,7 @@ void common_test()
 	};
 	for (auto h: handlers)
 		logger->add_handler(h);
+
 	handlers[0]->set_time_formatter(std::make_unique<CMsTimeFormatter>());
 	handlers[1]->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 
@@ -173,15 +174,16 @@ void common_test()
 	});
 #endif
 
-	logger->write(LOG_DEBUG, "DEBUG", "hello, world");
+	int i = 0;
+	float f = 3.1415926f;
+	const char *c = "const chars";
+	std::string s = "std::string";
+
+	logger->write(LOG_DEBUG, "DEBUG", "debug info: %d, %f, '%s', '%s'", i, f, c, s);
 	logger->write(LOG_INFO, "INFO", "common message");
 	logger->write(LOG_WARNING, "WARNING", "it's a warning");
 	logger->write(LOG_ERROR, "ERROR", "it's an error");
 	logger->write(LOG_CRITICAL, "CRITICAL", "fatal error!");
-
-	// for (int i = 0; i < 100; ++i) {
-	// 	logger->write(LOG_INFO, "TEST", "message[%d]", i);
-	// }
 
 	// close and exit
 	logger->close();
@@ -201,12 +203,12 @@ void common_test()
 void file_rotate_test()
 {
 	printf("stb_log file rotate test start...\n");
-	CLogFile *h = new CLogFile("logs/exception/test.log");
+	CLogFile *h = new CLogFile("log/exception/test.log");
 	assert(h->get_base_name() == "test.log");
 #if defined(_WIN32) || defined(_WIN64)
-	assert(h->get_directory() == "logs\\exception\\");
+	assert(h->get_directory() == "log\\exception\\");
 #else
-	assert(h->get_directory() == "logs/exception/");
+	assert(h->get_directory() == "log/exception/");
 #endif
 	h->rotate();
 	h->rotate();
@@ -222,7 +224,7 @@ void usage_test()
 {
 	printf("stb_log usage test start...\n");
 	start_logger();
-	start_file_logger("logs/test.log");
+	start_file_logger("log/test.log");
 	start_debug_logger();
 
 #ifdef LOG_SEVERITY_LEVEL
@@ -230,16 +232,18 @@ void usage_test()
 #else
 	constexpr int log_severity_level = 99;
 #endif
-	log_write(LOG_INFO, "TEST", "current log sevirity level is [%d]", log_severity_level);
-	log_debug("a debug message");
-	log_info("a info message");
-	log_warning("a warning message");
-	log_error("a error message");
-	log_critical("a critical message");
 
-	for (int i = 0; i < 1000; ++i) {
-		log_info("message %d", i);
-	}
+	int i = 255;
+	float f = 3.1415926f;
+	const char *c = "const chars";
+	std::string s = "std::string";
+
+	log_write(LOG_INFO, "TEST", "current log sevirity level is [%d]", log_severity_level);
+	log_debug("debug message: %d, %f, '%s', '%s'", i, f, c, s);
+	log_info("info message: %d, %f, '%s', '%s'", i, f, c, s);
+	log_warning("warning message: %d, %f, '%s', '%s'", i, f, c, s);
+	log_error("error message: %d, %f, '%s', '%s'", i, f, c, s);
+	log_critical("critical message: %d, %f, '%s', '%s'", i, f, c, s);
 
 	close_logger();
 	printf("success\n");
@@ -247,10 +251,10 @@ void usage_test()
 
 int main(int args, char *argv[])
 {
-//	thread_test();
-//	file_rotate_test();
-	common_test();
-//	usage_test();
-//	getchar();
+	// thread_test();
+	// file_rotate_test();
+	// common_test();
+	usage_test();
+	// getchar();
 	return 0;
 }

@@ -54,6 +54,7 @@ enum StbLogLevel {
 #else
 #define STB_LOG_LEVEL StbLogLevel
 #endif
+
 // write log
 #define log_write(lvl, channel, fmt, ...) (get_log_context()->logger->write(lvl, channel, (fmt), ##__VA_ARGS__))
 #ifdef LOG_SEVERITY_LEVEL
@@ -133,6 +134,20 @@ bool start_file_logger(const char *log_file_path,
 
 // start logging to debug console
 bool start_debug_logger(millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+
+// convert to types that are passed to printf
+template<class T>
+inline T to_printable(const T v) {
+	return v;
+}
+
+inline const char* to_printable(const std::string &v) {
+	return v.c_str();
+}
+
+inline const wchar_t* to_printable(const std::wstring &v) {
+	return v.c_str();
+}
 
 // --------------------------------
 // END of interface declaration
@@ -238,7 +253,7 @@ struct GenericLogWriter {
 		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
 		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
 		index_apply<tuple_size>([t](auto... Is) {
-			printf(std::get<Is>(*t)...);
+			printf(to_printable(std::get<Is>(*t))...);
 		});
 	}
 
@@ -248,7 +263,7 @@ struct GenericLogWriter {
 		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
 		auto c = (std::pair<FILE*, long>*)context;
 		index_apply<tuple_size>([t, c](auto... Is) {
-			c->second = fprintf(c->first, std::get<Is>(*t)...);
+			c->second = fprintf(c->first, to_printable(std::get<Is>(*t))...);
 		});
 	}
 
@@ -858,10 +873,10 @@ const char *CDateTimeFormatter::format_time(LogEventTime t) {
 void CLogStdout::process_event(const LogData *log) {
 	if (m_formatter) {
 		const char *stime = m_formatter->format_time(log->time);
-		printf("[%s]", stime);
+		printf("[%s] ", stime);
 	}
 	if (log->channel[0] != 0) {
-		printf(" [%s]", log->channel);
+		printf("[%s] ", log->channel);
 	}
 	log->writer[LOG_WRITER_STDOUT](log, nullptr);
 	printf("\n");
