@@ -251,9 +251,9 @@ void usage_test()
 
 int main(int args, char *argv[])
 {
-	// thread_test();
+	thread_test();
 	// file_rotate_test();
-	common_test();
+	// common_test();
 	// usage_test();
 	// getchar();
 	return 0;
