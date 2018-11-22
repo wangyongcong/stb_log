@@ -9,11 +9,12 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 4. Logging I/O could take place in backend thread which reduce frondend latency.
 5. Use high performance [LMAX Disruptor](https://github.com/LMAX-Exchange/disruptor) pattern.
 6. Strip logging call according log severity level at compile time.
+7. Super fast fondend log writing. No un-necessary memory copy.
 
 ## Platform
 - [x] Windows
-- [ ] Linux
 - [x] MacOS
+- [ ] Linux
 
 ## TODO
 - [x] Log message filtering.
@@ -23,9 +24,8 @@ Single file async logging library for C++, inspired by [nothings/stb](https://gi
 - [x] Logging to Visual Studio debugger output.
 - [x] Log file rotation.
 - [x] Helper interface and macro.
-- [ ] Benchmark.
-- [ ] Reduce client side latence.
-- [ ] Optimize log event queue.
+- [x] Benchmark.
+- [x] Reduce client side latence.
 
 ## Usage
 ```C++
@@ -68,4 +68,8 @@ int main(int args, char *argv[])
 ```
 
 ## Benchmark
-comming soon...
+Currently client side log writing, which just send message to backend, is faster than nano log. When sending 20000 message, stb_log cost 2700 microseconds, Nanolog cost 4700 microseconds. 
+
+If stb_log's ring queue is full, writing threads get blocked. Under this situation, stb_log is much slower than Nanolog. Nanolog will allocate new ring buffer when it's full and won't block writing threads.
+
+Nanolog's backend has faster I/O then stb_log. It's strange and need futher inspection.

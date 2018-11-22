@@ -3,7 +3,7 @@
 
 long long bm_nanolog()
 {
-	nanolog::initialize(nanolog::GuaranteedLogger(), "logs/", "bm_nanolog", 256);
+	nanolog::initialize(nanolog::GuaranteedLogger(), "log/", "bm_nanolog", 256);
 
 	auto t1 = Clock::now();
 	for (int i = 0; i < ITERATION; ++i)

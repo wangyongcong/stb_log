@@ -4,7 +4,7 @@
 
 long long bm_stb_log()
 {
-	start_file_logger("logs/bm_stb_log.log");
+	start_file_logger("log/bm_stb_log.log");
 
 	auto t1 = Clock::now();
 	for (int i = 0; i < ITERATION; ++i)

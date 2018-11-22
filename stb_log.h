@@ -41,7 +41,7 @@ enum StbLogLevel {
 #define LOG_FILE_ROTATE_COUNT 8
 // logger queue buffer size in log entry count
 // the larger size, the better concurrent performance (less waiting for synchronization)
-#define LOG_BUFFER_SIZE 1024
+#define LOG_BUFFER_SIZE 20000
 // logger worker thread sleep time when it's casual
 #define LOG_WORKER_SLEEP_TIME 20
 // log severity level
@@ -281,11 +281,9 @@ const LogWriter GenericLogWriter<Args...>::s_writer_table[LOG_WRITER_COUNT] = {
 #endif
 
 struct LogEvent {
-	Sequence publish;
 	LogData *data;
+	char _padding[CACHELINE_SIZE - sizeof(LogData*)];
 };
-
-//	constexpr size_t log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
 
 typedef bool (*LogFilter)(const LogData *);
 
@@ -493,7 +491,7 @@ public:
 		auto log = get_event(seq);
 		auto prev = log->data;
 		log->data = data;
-		log->publish.store(seq + 1);
+		m_seq_write.store(seq + 1);
 		// release reference to prev data entry
 		if (prev) {
 			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel)) {
@@ -524,7 +522,7 @@ public:
 		auto *log = get_event(seq);
 		auto prev = log->data;
 		log->data = data;
-		log->publish.store(seq + 1);
+		m_seq_write.store(seq + 1);
 		// release reference to prev data entry
 		if (prev) {
 			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel))
@@ -542,7 +540,11 @@ public:
 		uint64_t seq = _claim(1);
 		LogEvent *log = get_event(seq);
 		log->data = nullptr;
-		log->publish.store(seq + 1);
+		m_seq_write.store(seq + 1);
+	}
+
+	inline int64_t get_publish() const {
+		return m_seq_write.load();
 	}
 
 	inline const LogEvent *get_event(uint64_t seq) const {
@@ -571,6 +573,7 @@ private:
 	std::vector<CLogHandler *> m_handler_list;
 	uint64_t m_min_seq;
 	Sequence m_seq_claim;
+	Sequence m_seq_write;
 };
 
 #ifdef USE_NAMESPACE
@@ -674,7 +677,7 @@ CLogger::CLogger(size_t size) {
 	assert(size > 0);
 	if (size & (size - 1))
 		size = get_next_power2(size);
-	assert(sizeof(LogEvent) % CACHELINE_SIZE == 0);
+	static_assert(sizeof(LogEvent) % CACHELINE_SIZE == 0, "LogEvent should be fit in cacheline");
 	size_t buf_size = sizeof(LogEvent) * size;
 	m_event_queue = (LogEvent *) aligned_alloc(CACHELINE_SIZE, buf_size);
 	assert(m_event_queue);
@@ -682,12 +685,11 @@ CLogger::CLogger(size_t size) {
 	for (size_t i = 0; i < size; ++i) {
 		LogEvent *log = &m_event_queue[i];
 		ASSERT_ALIGNMENT(log, CACHELINE_SIZE);
-		ASSERT_ALIGNMENT(&log->publish, CACHELINE_SIZE);
 		// initialize LogEvent
 		log->data = nullptr;
-		log->publish.set(0);
 	}
 	m_seq_claim.set(0);
+	m_seq_write.set(0);
 	m_min_seq = 0;
 }
 
@@ -793,9 +795,9 @@ void CLogHandler::process() {
 	constexpr unsigned batch_size = 64;
 	log_entries.reserve(batch_size);
 	while (!m_closed) {
-		log = m_logger->get_event(seq);
-		pub = log->publish.load();
-		if (pub > seq) {
+		pub = m_logger->get_publish();
+		while (pub > seq) {
+			log = m_logger->get_event(seq);
 			data = log->data;
 			if (!data) {
 				m_closed = true;
@@ -805,7 +807,6 @@ void CLogHandler::process() {
 			}
 			m_seq.store(pub);
 			seq += 1;
-			assert(pub == seq);
 			if (log_entries.size() < batch_size)
 				continue;
 		}
