@@ -20,4 +20,4 @@ add_executable(
 	${source}
 	${nanolog}
 )
-target_include_directories(benchmark PRIVATE ..)
+target_include_directories(benchmark PRIVATE . .. nanolog)

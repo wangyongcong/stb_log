@@ -4,6 +4,7 @@
 
 long long bm_stb_log()
 {
+	printf("start stb_log\n");
 	start_file_logger("log/bm_stb_log.log");
 
 	auto t1 = Clock::now();

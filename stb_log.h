@@ -12,6 +12,7 @@
 #include <memory>
 #include <thread>
 #include <string>
+//#include "benchmark/benchmark.h"
 
 #ifdef USE_NAMESPACE
 #ifndef STB_LOG_NAMESPACE
@@ -41,9 +42,11 @@ enum StbLogLevel {
 #define LOG_FILE_ROTATE_COUNT 8
 // logger queue buffer size in log entry count
 // the larger size, the better concurrent performance (less waiting for synchronization)
-#define LOG_BUFFER_SIZE 1024
+#define LOG_BUFFER_SIZE 20000
 // logger worker thread sleep time when it's casual
-#define LOG_WORKER_SLEEP_TIME 20
+#define LOG_WORKER_SLEEP_TIME 10
+// logger worker batch size
+#define LOG_BATCH_SIZE 64
 // log severity level
 #ifndef LOG_SEVERITY_LEVEL
 #define LOG_SEVERITY_LEVEL 0
@@ -344,6 +347,7 @@ public:
 	virtual ~CLogHandler();
 
 	void process();
+	void flush();
 
 	virtual void process_event(const LogData *data) {};
 
@@ -377,6 +381,7 @@ protected:
 	CLogger *m_logger;
 	LogFilter m_filter;
 	std::unique_ptr<CLogTimeFormatter> m_formatter;
+	std::vector<LogData*> m_batch;
 	bool m_closed;
 	Sequence m_seq;
 };
@@ -589,7 +594,8 @@ private:
 #include <string>
 #include <algorithm>
 
-#define LOG_EVENT_BUFFER(log) (char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
+#define LOG_EVENT_BUFFER(log) \
+(char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
 
 #ifdef USE_NAMESPACE
 namespace STB_LOG_NAMESPACE {
@@ -773,10 +779,12 @@ void CLogger::remove_handler(CLogHandler *handler) {
 // --------------------------------
 
 CLogHandler::CLogHandler()
-		: m_logger(nullptr), m_filter(nullptr), m_formatter(nullptr), m_closed(false) {
+		: m_logger(nullptr), m_filter(nullptr), m_formatter(nullptr), m_closed(false)
+{
 	ASSERT_ALIGNMENT(this, CACHELINE_SIZE);
 	ASSERT_ALIGNMENT(&m_seq, CACHELINE_SIZE);
 	m_seq.set(0);
+	m_batch.reserve(LOG_BATCH_SIZE);
 }
 
 CLogHandler::~CLogHandler() {
@@ -791,29 +799,33 @@ void CLogHandler::process() {
 	uint64_t seq = m_seq.get(), pub;
 	LogEvent *log;
 	LogData *data = nullptr;
-	std::vector<LogData *> log_entries;
-	constexpr unsigned batch_size = 64;
-	log_entries.reserve(batch_size);
 	while (!m_closed) {
 		log = m_logger->get_event(seq);
 		pub = log->publish.load();
-		if (pub > seq) {
-			data = log->data;
-			if (!data) {
-				m_closed = true;
-			} else if (!m_filter or m_filter(data)) {
-				data->ref += 1;
-				log_entries.push_back(data);
-			}
-			m_seq.store(pub);
-			seq += 1;
-			assert(pub == seq);
-			if (log_entries.size() < batch_size)
-				continue;
+		if (pub <= seq)
+			break;
+		data = log->data;
+		if (!data) {
+			m_closed = true;
+		} else if (!m_filter or m_filter(data)) {
+			data->ref += 1;
+			m_batch.push_back(data);
 		}
-		break;
+		m_seq.store(pub);
+		seq += 1;
+		assert(pub == seq);
+		if (m_batch.size() >= LOG_BATCH_SIZE)
+			flush();
 	}
-	for (auto iter: log_entries) {
+	if(!m_batch.empty())
+		flush();
+	if (m_closed)
+		on_close();
+}
+	
+void CLogHandler::flush()
+{
+	for (auto iter: m_batch) {
 		process_event(iter);
 		if (1 == iter->ref.fetch_sub(1, std::memory_order_acq_rel)) {
 			if(iter->deleter)
@@ -821,8 +833,7 @@ void CLogHandler::process() {
 			delete[] (char *) iter;
 		}
 	}
-	if (m_closed)
-		on_close();
+	m_batch.clear();
 }
 
 // --------------------------------
@@ -946,8 +957,12 @@ FILE *CLogFile::_share_open(const char *path, const char *mode) {
 }
 
 CLogFile::CLogFile(const char *filepath, bool append, int rotate_count, size_t rotate_size)
-		: m_hfile(nullptr), m_cur_size(0), m_rotate_size(rotate_size), m_rotate_count(rotate_count),
-		  m_curfile(filepath) {
+	: m_hfile(nullptr)
+	, m_curfile(filepath)
+	, m_cur_size(0)
+	, m_rotate_size(rotate_size)
+	, m_rotate_count(rotate_count)
+{
 	CLogFileSystem::normpath(m_curfile);
 	CLogFileSystem::split(m_curfile, m_logpath, m_logname);
 	if (!CLogFileSystem::isdir(m_logpath) && !CLogFileSystem::makedirs(m_logpath)) {
@@ -964,27 +979,29 @@ CLogFile::CLogFile(const char *filepath, bool append, int rotate_count, size_t r
 
 CLogFile::~CLogFile() {
 	if (m_hfile) {
+        fflush(m_hfile);
 		fclose(m_hfile);
 		m_hfile = 0;
 	}
 }
 
 void CLogFile::process_event(const LogData *log) {
-		if (m_formatter) {
-			const char *stime = m_formatter->format_time(log->time);
-			m_cur_size += fprintf(m_hfile, "[%s] ", stime);
-		}
-		if (log->channel[0] != 0) {
-			m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
-		}
-		std::pair<FILE*, long> context{m_hfile, 0};
-		log->writer[LOG_WRITER_FILE](log, &context);
-		m_cur_size += context.second + 1;
-		fprintf(m_hfile, "\n");
-		fflush(m_hfile);
-		if (m_cur_size >= m_rotate_size) {
-			rotate();
-		}
+//	CTimer timer;
+	if (m_formatter) {
+		const char *stime = m_formatter->format_time(log->time);
+		m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+	}
+	if (log->channel[0] != 0) {
+		m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
+	}
+	std::pair<FILE*, long> context{m_hfile, 0};
+	log->writer[LOG_WRITER_FILE](log, &context);
+	m_cur_size += context.second + 1;
+	fprintf(m_hfile, "\n");
+	// fflush(m_hfile);
+	if (m_cur_size >= m_rotate_size) {
+		rotate();
+	}
 }
 
 void CLogFile::on_close() {

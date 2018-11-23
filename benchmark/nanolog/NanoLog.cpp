@@ -692,6 +692,11 @@ namespace nanolog
 		nanologger.reset(new NanoLogger(gl, log_directory, log_file_name, log_file_roll_size_mb));
 		atomic_nanologger.store(nanologger.get(), std::memory_order_seq_cst);
 	}
+    
+    void close()
+    {
+        nanologger.reset();
+    }
 
 	std::atomic < unsigned int > loglevel = { 0 };
 
