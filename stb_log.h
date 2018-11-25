@@ -80,9 +80,9 @@ enum StbLogLevel {
 // logger queue buffer size
 // writer(producer) thread will block when the queue is full
 // change the size according the maximum concurrency
-#define LOG_QUEUE_SIZE 1024
+#define LOG_QUEUE_SIZE 256
 // logger worker thread sleep time when it's casual (in milliseconds)
-#define LOG_WORKER_SLEEP_TIME 10
+#define LOG_WORKER_SLEEP_TIME 30
 // logger worker batch size
 #define LOG_BATCH_SIZE 64
 // cache line size
