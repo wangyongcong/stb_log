@@ -3,10 +3,10 @@ message(STATUS "Configuring benchmark")
 #message(STATUS ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
 
 set(nanolog
-	nanolog/nanolog.hpp
-	nanolog/nanolog.cpp
+	NanoLog.hpp
+	NanoLog.cpp
 )
-source_group(nanolog FILES ${nanolog})
+source_group(NanoLog FILES ${nanolog})
 
 set(source
 	benchmark.h
@@ -20,4 +20,4 @@ add_executable(
 	${source}
 	${nanolog}
 )
-target_include_directories(benchmark PRIVATE . .. nanolog)
+target_include_directories(benchmark PRIVATE . ..)

@@ -1,4 +1,4 @@
-#include "nanolog/nanolog.hpp"
+#include "NanoLog.hpp"
 #include "benchmark.h"
 
 long long bm_nanolog()

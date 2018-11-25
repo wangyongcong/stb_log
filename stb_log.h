@@ -1,6 +1,43 @@
-/* stb_log - v0.0.1
-   
-*/
+/* stb_log - v1.0.0
+
+ // first define log severity
+ #define LOG_SEVERITY_LEVEL 10
+
+ // start a logger that write to std out
+ start_logger();
+ 
+ // start a logger that write to file "log/test.log"
+ start_file_logger("log/test.log");
+ 
+ // or manually setup a logger
+ CLogFile *err = new CLogFile("log/error.log");
+ // filter that only accept Error message
+ err->set_filter([](const LogData* log) -> bool {
+ 	return log->level >= LOG_ERROR;
+ });
+ // start collecting messages
+ start_handler_thread(err);
+ 
+ // now we can write log message at any threads
+ // all started handlers will do the I/O jobs
+ // the log_xxx macros will be stripped according LOG_SEVERITY_LEVEL
+ 
+ int i = 255;
+ float f = 3.1415926f;
+ const char *c = "const chars";
+ std::string s = "std::string";
+ 
+ log_write(LOG_INFO, "TEST", "current log sevirity level is [%d]", log_severity_level);
+ log_debug("debug message: %d, %f, '%s', '%s'", i, f, c, s);
+ log_info("info message: %d, %f, '%s', '%s'", i, f, c, s);
+ log_warning("warning message: %d, %f, '%s', '%s'", i, f, c, s);
+ log_error("error message: %d, %f, '%s', '%s'", i, f, c, s);
+ log_critical("critical message: %d, %f, '%s', '%s'", i, f, c, s);
+
+ // finnally close the logger
+ close_logger();
+
+ */
 
 #ifndef INCLUDE_STB_LOG_H
 #define INCLUDE_STB_LOG_H
@@ -12,7 +49,6 @@
 #include <memory>
 #include <thread>
 #include <string>
-//#include "benchmark/benchmark.h"
 
 #ifdef USE_NAMESPACE
 #ifndef STB_LOG_NAMESPACE
@@ -32,26 +68,29 @@ enum StbLogLevel {
 	LOG_DEBUG = 10,
 };
 
-#ifndef CACHELINE_SIZE
-#define CACHELINE_SIZE 64
-#endif
-#define ASSERT_ALIGNMENT(ptr, align) assert((uintptr_t(ptr) % (align)) == 0)
-// default log file rotate size 256 MB
-#define LOG_FILE_ROTATE_SIZE (256*1024*1024)
-// define log file rotate count
-#define LOG_FILE_ROTATE_COUNT 8
-// logger queue buffer size in log entry count
-// the larger size, the better concurrent performance (less waiting for synchronization)
-#define LOG_BUFFER_SIZE 20000
-// logger worker thread sleep time when it's casual
-#define LOG_WORKER_SLEEP_TIME 10
-// logger worker batch size
-#define LOG_BATCH_SIZE 64
 // log severity level
 #ifndef LOG_SEVERITY_LEVEL
 #define LOG_SEVERITY_LEVEL 0
 #endif
-// define LogLevel
+// default log file rotate size (256 MB)
+#define LOG_FILE_ROTATE_SIZE (256*1024*1024)
+// define log file rotate count
+// keep latest 8 log file
+#define LOG_FILE_ROTATE_COUNT 8
+// logger queue buffer size
+// writer(producer) thread will block when the queue is full
+// change the size according the maximum concurrency
+#define LOG_QUEUE_SIZE 1024
+// logger worker thread sleep time when it's casual (in milliseconds)
+#define LOG_WORKER_SLEEP_TIME 10
+// logger worker batch size
+#define LOG_BATCH_SIZE 64
+// cache line size
+#ifndef CACHELINE_SIZE
+#define CACHELINE_SIZE 64
+#endif
+
+// stb_log namespace
 #ifdef USE_NAMESPACE
 #define STB_LOG_LEVEL STB_LOG_NAMESPACE::StbLogLevel
 #else
@@ -103,7 +142,6 @@ enum StbLogLevel {
 // public user interface
 // --------------------------------
 class CLogger;
-
 class CLogHandler;
 
 struct LogContext {
@@ -112,17 +150,22 @@ struct LogContext {
 };
 typedef std::chrono::milliseconds::rep millisecond_t;
 
-// get global logger singleton
+// get global logger info
 inline LogContext *get_log_context() {
 	static LogContext s_logger_context;
 	return &s_logger_context;
+}
+
+// get global logger
+inline CLogger* get_logger() {
+	return get_log_context()->logger;
 }
 
 // close logger
 void close_logger();
 
 // start a logger thread
-void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time);
+void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
 // start logging to standard output
 bool start_logger(millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
@@ -138,7 +181,8 @@ bool start_file_logger(const char *log_file_path,
 // start logging to debug console
 bool start_debug_logger(millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
-// convert to types that are passed to printf
+// convert any value to primitive types that can be recognized by printf
+// add overload functions to customize type conversion
 template<class T>
 inline T to_printable(const T v) {
 	return v;
@@ -205,23 +249,19 @@ void aligned_free(void *ptr) {
 using LogEventTime = std::chrono::system_clock::time_point;
 
 struct LogData;
-
 typedef void (*LogWriter)(const LogData *log, void *context);
-typedef void (*LogDeleter)(LogData *log);
-
-enum ELogWriterType {
-	LOG_WRITER_STDOUT,
-	LOG_WRITER_FILE,
-	LOG_WRITER_COUNT
-};
 
 struct LogData {
-	mutable std::atomic<unsigned> ref;
 	int level;
 	LogEventTime time;
 	const char *channel;
 	const LogWriter *writer;
-	LogDeleter deleter;
+};
+	
+struct LogEvent {
+	Sequence publish;
+	std::shared_ptr<void> data;
+	char _padding[CACHELINE_SIZE - sizeof(std::shared_ptr<void>)];
 };
 
 template<class T>
@@ -239,17 +279,18 @@ template<size_t N, class F>
 constexpr auto index_apply(F f) {
 	return index_apply_impl(f, std::make_index_sequence<N>{});
 }
+	
+enum ELogWriterType {
+	LOG_WRITER_STDOUT,
+	LOG_WRITER_FILE,
+	
+	LOG_WRITER_COUNT
+};
 
 template<typename... Args>
 struct GenericLogWriter {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-security"
-
-	static void release(LogData *log) {
-		using tuple_t = std::tuple<const char *, Args...>;
-		auto t = reinterpret_cast<tuple_t *>((char *) log + sizeof(LogData));
-		t->~tuple_t();
-	}
 
 	static void write_stdout(const LogData *log, void *context) {
 		using tuple_t = std::tuple<const char *, Args...>;
@@ -282,14 +323,6 @@ const LogWriter GenericLogWriter<Args...>::s_writer_table[LOG_WRITER_COUNT] = {
 	&write_file,
 };
 #endif
-
-struct LogEvent {
-	Sequence publish;
-	LogData *data;
-	char _padding[CACHELINE_SIZE - sizeof(LogData*)];
-};
-
-//	constexpr size_t log_event_fixed_buffer_size = offsetof(LogEvent, publish) - offsetof(LogEvent, buffer);
 
 typedef bool (*LogFilter)(const LogData *);
 
@@ -343,14 +376,10 @@ public:
 	}
 
 	CLogHandler();
-
 	virtual ~CLogHandler();
-
 	void process();
-	void flush();
-
+	virtual void flush();
 	virtual void process_event(const LogData *data) {};
-
 	virtual void on_close() {};
 
 	inline void follow(CLogger *seq) {
@@ -381,7 +410,7 @@ protected:
 	CLogger *m_logger;
 	LogFilter m_filter;
 	std::unique_ptr<CLogTimeFormatter> m_formatter;
-	std::vector<LogData*> m_batch;
+	std::vector<std::shared_ptr<void>> m_batch;
 	bool m_closed;
 	Sequence m_seq;
 };
@@ -423,8 +452,8 @@ public:
 
 	virtual ~CLogFile();
 
+	virtual void flush() override;
 	virtual void process_event(const LogData *log) override;
-
 	virtual void on_close() override;
 
 	inline bool is_ready() const {
@@ -471,84 +500,54 @@ private:
 class CLogger {
 public:
 	CLogger(size_t buf_size);
-
 	~CLogger();
-
 	CLogger(const CLogger &) = delete;
-
 	CLogger &operator=(const CLogger &) = delete;
-
+	// notify all handlers to close
+	void close();
+	void add_handler(CLogHandler *handler);
+	void remove_handler(CLogHandler *handler);
+	// release all handlers
+	// assume self own the handlers, and handlers are allocated by new operator
+	void release_handlers();
+	// send log message to handlers
 	template<class... Args>
 	void write(int level, const char *channel, const char *format, Args... args) {
 		using tuple_t = std::tuple<const char *, Args...>;
-		constexpr size_t size = sizeof(LogData) + sizeof(tuple_t);
-		char *buf = new char[size];
-		new(buf + sizeof(LogData)) tuple_t{format, args...};
-		LogData *data = reinterpret_cast<LogData *>(buf);
-		data->ref = 1;
-		data->level = level;
-		data->time = std::chrono::system_clock::now();
-		data->channel = channel;
-		data->writer = GenericLogWriter<Args...>::s_writer_table;
-		if(std::is_pod<tuple_t>::value)
-			data->deleter = nullptr;
-		else
-			data->deleter = GenericLogWriter<Args...>::release;
+		struct entry_t  {
+			LogData base;
+			tuple_t data;
+		};
+		auto sptr = std::make_shared<entry_t>();
+		sptr->data = {format, args...};
+		auto &base = sptr->base;
+		base.level = level;
+		base.time = std::chrono::system_clock::now();
+		base.channel = channel;
+		base.writer = GenericLogWriter<Args...>::s_writer_table;
 		// publish event
 		auto seq = _claim(1);
 		auto log = get_event(seq);
-		auto prev = log->data;
-		log->data = data;
+		log->data = sptr;
 		log->publish.store(seq + 1);
-		// release reference to prev data entry
-		if (prev) {
-			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel)) {
-				if (prev->deleter)
-					prev->deleter(prev);
-				delete[] (char *) prev;
-			}
-		}
 	}
-
+	// send any data to handlers
 	template<class T>
 	void write(int level, const char *channel, const T &obj) {
-		constexpr size_t size = sizeof(LogData) + sizeof(obj);
-		char *buf = new char[size];
-		LogData *data = reinterpret_cast<LogData *>(buf);
-		data->ref = 1;
-		data->level = level;
-		data->time = std::chrono::system_clock::now();
-		data->channel = channel;
-		data->writer = nullptr;
-		if(std::is_pod<T>::value)
-			data->deleter = nullptr;
-		else
-			data->deleter = generic_release<T>;
-		new(buf + sizeof(LogData)) T(obj);
-		// publish event
+		struct entry_t {
+			LogData base;
+			T data;
+		};
+		auto sptr = std::make_shared<entry_t>();
+		sptr->data = obj;
+		auto &base = sptr->base;
+		base.level = level;
+		base.time = std::chrono::system_clock::now();
+		base.channel = channel;
+		base.writer = nullptr;
 		auto seq = _claim(1);
 		auto *log = get_event(seq);
-		auto prev = log->data;
-		log->data = data;
-		log->publish.store(seq + 1);
-		// release reference to prev data entry
-		if (prev) {
-			if (1 == prev->ref.fetch_sub(1, std::memory_order_acq_rel)) {
-				if(prev->deleter)
-					prev->deleter(prev);
-				delete[] (char *) prev;
-			}
-		}
-	}
-
-	void add_handler(CLogHandler *handler);
-
-	void remove_handler(CLogHandler *handler);
-
-	inline void close() {
-		uint64_t seq = _claim(1);
-		LogEvent *log = get_event(seq);
-		log->data = nullptr;
+		log->data = sptr;
 		log->publish.store(seq + 1);
 	}
 
@@ -594,8 +593,7 @@ private:
 #include <string>
 #include <algorithm>
 
-#define LOG_EVENT_BUFFER(log) \
-(char*)(((log)->capacity <= log_event_fixed_buffer_size) ? ((log)->fixed_buffer) : ((log)->buffer))
+#define ASSERT_ALIGNMENT(ptr, align) assert((uintptr_t(ptr) % (align)) == 0)
 
 #ifdef USE_NAMESPACE
 namespace STB_LOG_NAMESPACE {
@@ -604,7 +602,7 @@ namespace STB_LOG_NAMESPACE {
 void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time) {
 	LogContext *lc = get_log_context();
 	if (!lc->logger)
-		lc->logger = new CLogger(LOG_BUFFER_SIZE);
+		lc->logger = new CLogger(LOG_QUEUE_SIZE);
 	lc->logger->add_handler(handler);
 	std::chrono::milliseconds msec(sleep_time);
 	lc->thread_pool.emplace_back(std::make_unique<std::thread>([handler, msec] {
@@ -624,6 +622,7 @@ void close_logger() {
 		th->join();
 	}
 	lc->thread_pool.clear();
+	lc->logger->release_handlers();
 	delete lc->logger;
 	lc->logger = nullptr;
 }
@@ -677,7 +676,7 @@ size_t CLogger::get_next_power2(size_t val) {
 // --------------------------------
 // CLogger implementation
 // --------------------------------
-
+	
 CLogger::CLogger(size_t size) {
 	assert(size > 0);
 	if (size & (size - 1))
@@ -706,10 +705,7 @@ CLogger::~CLogger() {
 	for (size_t i = 0; i <= m_size_mask; ++i) {
 		// clean up LogEvent
 		LogEvent *log = &m_event_queue[i];
-		if (log->data) {
-			delete[] log->data;
-			log->data = nullptr;
-		}
+		log->data = nullptr;
 	}
 	aligned_free(m_event_queue);
 	m_event_queue = nullptr;
@@ -774,6 +770,21 @@ void CLogger::remove_handler(CLogHandler *handler) {
 	}
 }
 
+void CLogger::release_handlers() {
+	for (auto iter: m_handler_list) {
+		iter->follow(nullptr);
+		delete iter;
+	}
+	m_handler_list.clear();
+}
+
+void CLogger::close() {
+	uint64_t seq = _claim(1);
+	LogEvent *log = get_event(seq);
+	log->data = nullptr;
+	log->publish.store(seq + 1);
+}
+
 // --------------------------------
 // CLogHandler implementation
 // --------------------------------
@@ -798,18 +809,17 @@ void CLogHandler::process() {
 	assert(m_logger);
 	uint64_t seq = m_seq.get(), pub;
 	LogEvent *log;
-	LogData *data = nullptr;
+	LogData *data;
 	while (!m_closed) {
 		log = m_logger->get_event(seq);
 		pub = log->publish.load();
 		if (pub <= seq)
 			break;
-		data = log->data;
+		data = (LogData*)(log->data.get());
 		if (!data) {
 			m_closed = true;
 		} else if (!m_filter or m_filter(data)) {
-			data->ref += 1;
-			m_batch.push_back(data);
+			m_batch.push_back(log->data);
 		}
 		m_seq.store(pub);
 		seq += 1;
@@ -825,13 +835,8 @@ void CLogHandler::process() {
 	
 void CLogHandler::flush()
 {
-	for (auto iter: m_batch) {
-		process_event(iter);
-		if (1 == iter->ref.fetch_sub(1, std::memory_order_acq_rel)) {
-			if(iter->deleter)
-				iter->deleter(iter);
-			delete[] (char *) iter;
-		}
+	for (auto &iter: m_batch) {
+		process_event((LogData*)iter.get());
 	}
 	m_batch.clear();
 }
@@ -979,14 +984,18 @@ CLogFile::CLogFile(const char *filepath, bool append, int rotate_count, size_t r
 
 CLogFile::~CLogFile() {
 	if (m_hfile) {
-        fflush(m_hfile);
 		fclose(m_hfile);
 		m_hfile = 0;
 	}
 }
+	
+void CLogFile::flush()
+{
+	CLogHandler::flush();
+	fflush(m_hfile);
+}
 
 void CLogFile::process_event(const LogData *log) {
-//	CTimer timer;
 	if (m_formatter) {
 		const char *stime = m_formatter->format_time(log->time);
 		m_cur_size += fprintf(m_hfile, "[%s] ", stime);
@@ -998,7 +1007,6 @@ void CLogFile::process_event(const LogData *log) {
 	log->writer[LOG_WRITER_FILE](log, &context);
 	m_cur_size += context.second + 1;
 	fprintf(m_hfile, "\n");
-	// fflush(m_hfile);
 	if (m_cur_size >= m_rotate_size) {
 		rotate();
 	}
@@ -1069,9 +1077,10 @@ void CLogDebugWindow::process_event(const LogData * log)
 		OutputDebugStringA(log->channel);
 		OutputDebugStringA("] ");
 	}
-	const char *message = LOG_EVENT_BUFFER(log);
-	OutputDebugStringA(message);
-	OutputDebugStringA("\n");
+//	const char *message = LOG_EVENT_BUFFER(log);
+//	OutputDebugStringA(message);
+//	OutputDebugStringA("\n");
+	OutputDebugStringA("not implemented\n");
 }
 #endif // _WIN32 || _WIN64
 

@@ -19,7 +19,7 @@ int main(int argv, char *args[])
 	long long t0;
 	auto t1 = Clock::now();
 
-    t0 = bm_stb_log();
+	t0 = bm_stb_log();
 //    t0 = bm_nanolog();
 
 	auto t2 = Clock::now();
@@ -27,7 +27,7 @@ int main(int argv, char *args[])
 	auto total = dt.count();
 
 	printf("producer: %lld\n", t0);
-	printf("I/O: %lld\n", CTimer::s_total);
+//	printf("I/O: %lld\n", CTimer::s_total);
 	printf("total: %lld\n", total);
 //	getchar();
 	return 0;

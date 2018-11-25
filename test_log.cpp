@@ -225,7 +225,9 @@ void usage_test()
 	printf("stb_log usage test start...\n");
 	start_logger();
 	start_file_logger("log/test.log");
+#if defined(_WIN32) || defined(_WIN64)
 	start_debug_logger();
+#endif
 
 #ifdef LOG_SEVERITY_LEVEL
 	constexpr int log_severity_level = LOG_SEVERITY_LEVEL;
@@ -251,10 +253,10 @@ void usage_test()
 
 int main(int args, char *argv[])
 {
-	thread_test();
-	// file_rotate_test();
-	// common_test();
-	// usage_test();
-	// getchar();
+//	thread_test();
+//	file_rotate_test();
+//	common_test();
+	usage_test();
+//	getchar();
 	return 0;
 }

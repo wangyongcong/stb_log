@@ -10,7 +10,7 @@ long long bm_stb_log()
 	auto t1 = Clock::now();
 	for (int i = 0; i < ITERATION; ++i)
 	{
-		log_info("Logging %d %s %lf", i, CSTR, CFLOAT);
+		log_info("[%s:%s:%d] Logging %d %s %lf", __FILE__, __func__, __LINE__, i, CSTR, CFLOAT);
 	}
 	auto t2 = Clock::now();
 	auto dt = std::chrono::duration_cast<TimeUnit>(t2 - t1);

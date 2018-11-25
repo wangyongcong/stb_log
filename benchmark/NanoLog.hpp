@@ -154,7 +154,8 @@ namespace nanolog
      */
     void initialize(GuaranteedLogger gl, std::string const & log_directory, std::string const & log_file_name, uint32_t log_file_roll_size_mb);
     void initialize(NonGuaranteedLogger ngl, std::string const & log_directory, std::string const & log_file_name, uint32_t log_file_roll_size_mb);
-    // Close the logger singleton.
+    
+	// Close the logger singleton.
     // It's used for profiling. You should not call it manually.
     // The logger will close when application exit.
     void close();
