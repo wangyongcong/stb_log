@@ -225,26 +225,8 @@ struct alignas(CACHELINE_SIZE) Sequence {
 	}
 };
 
-void *aligned_alloc(size_t alignment, size_t size) {
-	// [Memory returned][ptr to start of memory][aligned memory][extra memory]
-	size_t request_size = size + alignment;
-	void *raw = malloc(request_size + sizeof(void *));
-	if (!raw)
-		return nullptr;
-	void *ptr = (void **) raw + 1;
-	ptr = std::align(alignment, size, ptr, request_size);
-	if (!ptr) {
-		free(raw);
-		return nullptr;
-	}
-	*((void **) ptr - 1) = raw;
-	return ptr;
-}
-
-void aligned_free(void *ptr) {
-	void *raw = *((void **) ptr - 1);
-	free(raw);
-}
+void *aligned_alloc(size_t alignment, size_t size);
+void aligned_free(void *ptr);
 
 using LogEventTime = std::chrono::system_clock::time_point;
 
@@ -313,16 +295,14 @@ struct GenericLogWriter {
 
 #pragma clang diagnostic pop
 
-	static const LogWriter s_writer_table[LOG_WRITER_COUNT];
+	static const LogWriter* get_writer_table() {
+		static const LogWriter s_writer_table[LOG_WRITER_COUNT] = {
+			&write_stdout,
+			&write_file,
+		};
+		return s_writer_table;
+	}
 };
-
-#ifdef STB_LOG_IMPLEMENTATION
-template<typename... Args>
-const LogWriter GenericLogWriter<Args...>::s_writer_table[LOG_WRITER_COUNT] = {
-	&write_stdout,
-	&write_file,
-};
-#endif
 
 typedef bool (*LogFilter)(const LogData *);
 
@@ -524,7 +504,7 @@ public:
 		base.level = level;
 		base.time = std::chrono::system_clock::now();
 		base.channel = channel;
-		base.writer = GenericLogWriter<Args...>::s_writer_table;
+		base.writer = GenericLogWriter<Args...>::get_writer_table();
 		// publish event
 		auto seq = _claim(1);
 		auto log = get_event(seq);
@@ -652,6 +632,27 @@ bool start_debug_logger(millisecond_t sleep_time) {
 	(void)sleep_time;
 	return false;
 #endif
+}
+
+void *aligned_alloc(size_t alignment, size_t size) {
+	// [Memory returned][ptr to start of memory][aligned memory][extra memory]
+	size_t request_size = size + alignment;
+	void *raw = malloc(request_size + sizeof(void *));
+	if (!raw)
+		return nullptr;
+	void *ptr = (void **) raw + 1;
+	ptr = std::align(alignment, size, ptr, request_size);
+	if (!ptr) {
+		free(raw);
+		return nullptr;
+	}
+	*((void **) ptr - 1) = raw;
+	return ptr;
+}
+
+void aligned_free(void *ptr) {
+	void *raw = *((void **) ptr - 1);
+	free(raw);
 }
 
 size_t CLogger::get_next_power2(size_t val) {
