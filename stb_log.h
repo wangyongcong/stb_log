@@ -196,6 +196,11 @@ inline const wchar_t* to_printable(const std::wstring &v) {
 	return v.c_str();
 }
 
+inline const uint64_t to_printable(std::thread::id tid) {
+	static std::hash<std::thread::id> hasher;
+	return hasher(tid);
+}
+	
 // --------------------------------
 // END of interface declaration
 // --------------------------------
@@ -233,24 +238,20 @@ using LogEventTime = std::chrono::system_clock::time_point;
 struct LogData;
 typedef void (*LogWriter)(const LogData *log, void *context);
 
-struct LogData {
+struct LogData
+{
 	int level;
 	LogEventTime time;
 	const char *channel;
 	const LogWriter *writer;
 };
 	
-struct LogEvent {
+struct LogEvent
+{
 	Sequence publish;
 	std::shared_ptr<void> data;
 	char _padding[CACHELINE_SIZE - sizeof(std::shared_ptr<void>)];
 };
-
-template<class T>
-void generic_release(LogData *log) {
-	auto ptr = reinterpret_cast<T*>((char*)log + sizeof(LogData));
-	ptr->~T();
-}
 
 template<class F, size_t... Is>
 constexpr auto index_apply_impl(F f, std::index_sequence<Is...>) {
@@ -500,16 +501,8 @@ public:
 		};
 		auto sptr = std::make_shared<entry_t>();
 		sptr->data = {format, args...};
-		auto &base = sptr->base;
-		base.level = level;
-		base.time = std::chrono::system_clock::now();
-		base.channel = channel;
-		base.writer = GenericLogWriter<Args...>::get_writer_table();
-		// publish event
-		auto seq = _claim(1);
-		auto log = get_event(seq);
-		log->data = sptr;
-		log->publish.store(seq + 1);
+		sptr->base.writer = GenericLogWriter<Args...>::get_writer_table();
+		_publish(level, channel, sptr);
 	}
 	// send any data to handlers
 	template<class T>
@@ -520,15 +513,8 @@ public:
 		};
 		auto sptr = std::make_shared<entry_t>();
 		sptr->data = obj;
-		auto &base = sptr->base;
-		base.level = level;
-		base.time = std::chrono::system_clock::now();
-		base.channel = channel;
-		base.writer = nullptr;
-		auto seq = _claim(1);
-		auto *log = get_event(seq);
-		log->data = sptr;
-		log->publish.store(seq + 1);
+		sptr->base.writer = nullptr;
+		_publish(level, channel, sptr);
 	}
 
 	inline const LogEvent *get_event(uint64_t seq) const {
@@ -551,6 +537,7 @@ public:
 
 private:
 	uint64_t _claim(uint64_t count);
+	void _publish(int level, const char *channel, std::shared_ptr<void> sptr);
 
 	LogEvent *m_event_queue;
 	size_t m_size_mask;
@@ -754,6 +741,17 @@ uint64_t CLogger::_claim(uint64_t count) {
 	}
 	m_min_seq = min_seq;
 	return request_seq;
+}
+
+void CLogger::_publish(int level, const char *channel, std::shared_ptr<void> sptr) {
+	LogData *base = (LogData*)sptr.get();
+	base->level = level;
+	base->channel = channel;
+	base->time = std::chrono::system_clock::now();
+	auto seq = _claim(1);
+	auto *log = get_event(seq);
+	log->data = sptr;
+	log->publish.store(seq + 1);
 }
 
 void CLogger::add_handler(CLogHandler *handler) {

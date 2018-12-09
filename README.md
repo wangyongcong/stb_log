@@ -64,11 +64,16 @@ int main(int args, char *argv[])
 }
 ```
 
+## Notice
+1. stb_log use a fixed size queue to pass message to backend. When the queue is full, writer will get blocked. So you should adjust the LOG_QUEUE_SIZE to fit your application. 
+2. Values that passed to the logger should be **copyable**. *std::string* can be passed directly and print as *%s*. *char\** must be available until it's processed. Note that string literals will be stored in read-only segments of memory. It's valid for the entire duration of the program.
+3. Overload *to_printable* function to convert custom data to *printf* format.
+
 ## Benchmark
 
 | Logger | Writer | Total |
 |--------|--------|-------|
-|stb_log| 3416 | 48827 |
+|stb_log| 3682 | 76755 |
 |NanoLog| 4596 | 187610 |
 
 Notes:
@@ -77,4 +82,3 @@ Notes:
 3. **stb_log** LOG_QUEUE_SIZE is set to 20K to prevent producer from blocking.
 4. **Writer** time (in microseconds) is the time that cost by log writing method in writer thread.
 5. **Total** time (in microseconds) is the time that the benchmark procedure cost. Mostly cost by I/O.
-6. **stg_log** dose not support writing of std::thread_id, but **Nanolog** do. So **Nanolog** do a bit more I/O than **stb_log**.

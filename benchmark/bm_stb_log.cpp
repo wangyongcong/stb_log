@@ -6,11 +6,11 @@ long long bm_stb_log()
 {
 	printf("start stb_log\n");
 	start_file_logger("log/bm_stb_log.log");
-
+	auto thread_id = std::this_thread::get_id();
 	auto t1 = Clock::now();
 	for (int i = 0; i < ITERATION; ++i)
 	{
-		log_info("[%s:%s:%d] Logging %d %s %lf", __FILE__, __func__, __LINE__, i, CSTR, CFLOAT);
+		log_info("[0x%lx] [%s:%s:%d] Logging %d %s %lf", thread_id, __FILE__, __func__, __LINE__, i, CSTR, CFLOAT);
 	}
 	auto t2 = Clock::now();
 	auto dt = std::chrono::duration_cast<TimeUnit>(t2 - t1);

@@ -7,11 +7,6 @@ extern long long bm_alloc();
 
 long long CTimer::s_total = 0;
 
-/* 
-send 20000 messages
-  stb_log: 2700 microseconds
-  nano_log: 4200 microseconds
-*/
 int main(int argv, char *args[])
 {
 	CTimer::init();
@@ -20,7 +15,7 @@ int main(int argv, char *args[])
 	auto t1 = Clock::now();
 
 	t0 = bm_stb_log();
-//    t0 = bm_nanolog();
+//	t0 = bm_nanolog();
 
 	auto t2 = Clock::now();
 	auto dt = std::chrono::duration_cast<TimeUnit>(t2 - t1);
