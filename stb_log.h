@@ -197,8 +197,14 @@ inline const wchar_t* to_printable(const std::wstring &v) {
 }
 
 inline const uint64_t to_printable(std::thread::id tid) {
-	static std::hash<std::thread::id> hasher;
-	return hasher(tid);
+	// if-constexpr
+	constexpr bool is_size64 = sizeof(std::thread::id) == sizeof(uint64_t);
+	if(is_size64)
+		return *(uint64_t*)&tid;
+	else {
+		std::hash<std::thread::id> hasher;
+		return hasher(tid);
+	}
 }
 	
 // --------------------------------
