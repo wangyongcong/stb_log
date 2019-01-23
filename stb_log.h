@@ -85,6 +85,9 @@ enum StbLogLevel {
 #define LOG_WORKER_SLEEP_TIME 30
 // logger worker batch size
 #define LOG_BATCH_SIZE 64
+// string logger default buffer size
+#define LOG_STRING_SIZE 1024
+#define LOG_STRING_SIZE_MAX 1024 * 1024
 // cache line size
 #ifndef CACHELINE_SIZE
 #define CACHELINE_SIZE 64
@@ -168,18 +171,19 @@ void close_logger();
 void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
 // start logging to standard output
-bool start_logger(millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+CLogHandler* start_logger(bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
 // start logging to file
-bool start_file_logger(const char *log_file_path,
+CLogHandler* start_file_logger(const char *log_file_path,
                        bool append_mode = false,
                        int max_rotation = LOG_FILE_ROTATE_COUNT,
                        size_t rotate_size = LOG_FILE_ROTATE_SIZE,
-                       millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME
+					   bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME
 );
 
-// start logging to debug console
-bool start_debug_logger(millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+// start logging to string buffer
+CLogHandler* start_string_logger(size_t buffer_size = LOG_STRING_SIZE,
+								 bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
 // convert any value to primitive types that can be recognized by printf
 // add overload functions to customize type conversion
@@ -254,7 +258,9 @@ struct LogData
 	
 struct LogEvent
 {
+	// 1 cacheline for shared publish flag
 	Sequence publish;
+	// 1 cacheline for data
 	std::shared_ptr<void> data;
 	char _padding[CACHELINE_SIZE - sizeof(std::shared_ptr<void>)];
 };
@@ -269,9 +275,11 @@ constexpr auto index_apply(F f) {
 	return index_apply_impl(f, std::make_index_sequence<N>{});
 }
 	
-enum ELogWriterType {
+enum ELogWriterType
+{
 	LOG_WRITER_STDOUT,
 	LOG_WRITER_FILE,
+	LOG_WRITER_STRING,
 	
 	LOG_WRITER_COUNT
 };
@@ -300,12 +308,24 @@ struct GenericLogWriter {
 		});
 	}
 
+	static void write_string(const LogData *log, void *context) {
+		using tuple_t = std::tuple<const char *, Args...>;
+		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
+		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
+		auto c = (std::pair<char*, size_t>*)context;
+		index_apply<tuple_size>([t, c](auto... Is) {
+			c->second = snprintf(c->first, c->second, to_printable(std::get<Is>(*t))...);
+		});
+
+	}
+	
 #pragma clang diagnostic pop
 
-	static const LogWriter* get_writer_table() {
+	static const LogWriter* get_writer() {
 		static const LogWriter s_writer_table[LOG_WRITER_COUNT] = {
 			&write_stdout,
 			&write_file,
+			&write_string,
 		};
 		return s_writer_table;
 	}
@@ -472,17 +492,42 @@ private:
 	size_t m_rotate_size;
 	int m_rotate_count;
 };
-
-#if defined(_WIN32) || defined(_WIN64)
-class CLogDebugWindow : public CLogHandler
+	
+class CCustomLog : public CLogHandler
 {
 public:
-	CLogDebugWindow();
+	CCustomLog();
+	virtual ~CCustomLog() {}
 	virtual void process_event(const LogData *log) override;
-private:
-	bool m_is_debugger;
+	// get C string
+	inline const char *str() const {
+		return m_str.first;
+	}
+	// get string size
+	inline size_t size() const {
+		return m_str.second;
+	}
+protected:
+	virtual std::pair<char*, size_t> getstr(size_t required_size) = 0;
+	virtual void setstr(size_t size) {}
+	virtual void handle_error(const LogData *log);
+	
+	std::pair<char*, size_t> m_str;
 };
-#endif
+	
+class CLogString : public CCustomLog
+{
+public:
+	CLogString(size_t init_size = LOG_STRING_SIZE);
+	virtual ~CLogString();
+
+protected:
+	virtual std::pair<char*, size_t> getstr(size_t required_size) override;
+
+private:
+	char *m_buf;
+	size_t m_capacity;
+};
 
 class CLogger {
 public:
@@ -507,7 +552,7 @@ public:
 		};
 		auto sptr = std::make_shared<entry_t>();
 		sptr->data = {format, args...};
-		sptr->base.writer = GenericLogWriter<Args...>::get_writer_table();
+		sptr->base.writer = GenericLogWriter<Args...>::get_writer();
 		_publish(level, channel, sptr);
 	}
 	// send any data to handlers
@@ -566,17 +611,23 @@ private:
 #include <string>
 #include <algorithm>
 
-#define ASSERT_ALIGNMENT(ptr, align) assert((uintptr_t(ptr) % (align)) == 0)
+#define ASSERT_ALIGNMENT(ptr, align) assert((ptr) && ((uintptr_t(ptr) % (align)) == 0))
 
 #ifdef USE_NAMESPACE
 namespace STB_LOG_NAMESPACE {
 #endif
 
-void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time) {
+inline LogContext* add_log_handler(CLogHandler *handler)
+{
 	LogContext *lc = get_log_context();
 	if (!lc->logger)
 		lc->logger = new CLogger(LOG_QUEUE_SIZE);
 	lc->logger->add_handler(handler);
+	return lc;
+}
+
+void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time) {
+	LogContext *lc = add_log_handler(handler);
 	std::chrono::milliseconds msec(sleep_time);
 	lc->thread_pool.emplace_back(std::make_unique<std::thread>([handler, msec] {
 		while (!handler->is_closed()) {
@@ -600,31 +651,36 @@ void close_logger() {
 	lc->logger = nullptr;
 }
 
-bool start_logger(millisecond_t sleep_time) {
+CLogHandler* start_logger(bool async, millisecond_t sleep_time) {
 	CLogStdout *handler = new CLogStdout();
 	handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
-	start_handler_thread(handler, sleep_time);
-	return true;
+	if(async)
+		start_handler_thread(handler, sleep_time);
+	else
+		add_log_handler(handler);
+	return handler;
 }
 
-bool start_file_logger(const char *log_file_path, bool append_mode,
-                       int max_rotation, size_t rotate_size, millisecond_t sleep_time) {
+CLogHandler* start_file_logger(const char *log_file_path, bool append_mode, int max_rotation,
+					   size_t rotate_size, bool async, millisecond_t sleep_time) {
 	CLogFile *handler = new CLogFile(log_file_path, append_mode, max_rotation, rotate_size);
 	handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
-	start_handler_thread(handler, sleep_time);
-	return true;
+	if(async)
+		start_handler_thread(handler, sleep_time);
+	else
+		add_log_handler(handler);
+	return handler;
 }
-
-bool start_debug_logger(millisecond_t sleep_time) {
-#if defined(_WIN32) || defined(_WIN64)
-	CLogDebugWindow *handler = new CLogDebugWindow();
+	
+CLogHandler* start_string_logger(size_t buffer_size, bool async, millisecond_t sleep_time)
+{
+	CLogString *handler = new CLogString(buffer_size);
 	handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
-	start_handler_thread(handler, sleep_time);
-	return true;
-#else
-	(void)sleep_time;
-	return false;
-#endif
+	if(async)
+		start_handler_thread(handler, sleep_time);
+	else
+		add_log_handler(handler);
+	return handler;
 }
 
 void *aligned_alloc(size_t alignment, size_t size) {
@@ -678,14 +734,14 @@ CLogger::CLogger(size_t size) {
 	static_assert(sizeof(LogEvent) % CACHELINE_SIZE == 0, "LogEvent should be fit in cacheline.");
 	size_t buf_size = sizeof(LogEvent) * size;
 	m_event_queue = (LogEvent *) aligned_alloc(CACHELINE_SIZE, buf_size);
-	assert(m_event_queue);
+	ASSERT_ALIGNMENT(m_event_queue, CACHELINE_SIZE);
 	m_size_mask = size - 1;
 	for (size_t i = 0; i < size; ++i) {
 		LogEvent *log = &m_event_queue[i];
 		ASSERT_ALIGNMENT(log, CACHELINE_SIZE);
 		ASSERT_ALIGNMENT(&log->publish, CACHELINE_SIZE);
 		// initialize LogEvent
-		log->data = nullptr;
+		new(log) LogEvent;
 		log->publish.set(0);
 	}
 	m_seq_claim.set(0);
@@ -699,7 +755,7 @@ CLogger::~CLogger() {
 	for (size_t i = 0; i <= m_size_mask; ++i) {
 		// clean up LogEvent
 		LogEvent *log = &m_event_queue[i];
-		log->data = nullptr;
+		log->~LogEvent();
 	}
 	aligned_free(m_event_queue);
 	m_event_queue = nullptr;
@@ -1053,41 +1109,95 @@ void CLogFile::rotate() {
 }
 
 // --------------------------------
-// Windows debug logger
+// String logger implementation
 // --------------------------------
 
-#if defined(_WIN32) || defined(_WIN64)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <Windows.h>
-
-CLogDebugWindow::CLogDebugWindow()
+CCustomLog::CCustomLog()
+	: m_str(nullptr, 0)
 {
-	m_is_debugger = IsDebuggerPresent();
+	
+}
+	
+void CCustomLog::process_event(const LogData *log)
+{
+	size_t capacity;
+	m_str = getstr(1);
+	if(!m_str.first) {
+		goto ERROR_EXIT;
+	}
+	capacity = m_str.second;
+	log->writer[LOG_WRITER_STRING](log, &m_str);
+	if(m_str.second < 0) {
+		goto ERROR_EXIT;
+	}
+	if(m_str.second >= capacity) {
+		// not enough size, try resize then write again
+		m_str = getstr(m_str.second + 1);
+		if(!m_str.first) {
+			goto ERROR_EXIT;
+		}
+		capacity = m_str.second;
+		log->writer[LOG_WRITER_STRING](log, &m_str);
+		if(m_str.second < 0) {
+			goto ERROR_EXIT;
+		}
+		// if still not enough, strip the string
+		if(m_str.second >= capacity) {
+			m_str.second = capacity - 1;
+			m_str.first[m_str.second] = 0;
+		}
+	}
+	// done with string buffer
+	setstr(m_str.second + 1);
+	return;
+	
+ERROR_EXIT:
+	// encounter error
+	handle_error(log);
+	return;
 }
 
-void CLogDebugWindow::process_event(const LogData * log)
+void CCustomLog::handle_error(const LogData *log)
 {
-	if (!m_is_debugger)
-		return;
-	if (m_formatter) {
-		const char *stime = m_formatter->format_time(log->time);
-		OutputDebugStringA("[");
-		OutputDebugStringA(stime);
-		OutputDebugStringA("] ");
-	}
-	if (log->channel[0] != 0) {
-		OutputDebugStringA("[");
-		OutputDebugStringA(log->channel);
-		OutputDebugStringA("] ");
-	}
-//	const char *message = LOG_EVENT_BUFFER(log);
-//	OutputDebugStringA(message);
-//	OutputDebugStringA("\n");
-	OutputDebugStringA("not implemented\n");
+	printf("Fail to write log.\n");
 }
-#endif // _WIN32 || _WIN64
+
+
+CLogString::CLogString(size_t init_size)
+	: CCustomLog()
+	, m_buf(nullptr)
+	, m_capacity(init_size)
+{
+	if(init_size < 1)
+		init_size = 1;
+	m_buf = new char[init_size];
+	m_buf[0] = 0;
+}
+
+CLogString::~CLogString()
+{
+	if(m_buf) {
+		delete [] m_buf;
+		m_buf = nullptr;
+	}
+}
+
+std::pair<char*, size_t> CLogString::getstr(size_t required_size)
+{
+	if(required_size > m_capacity) {
+		size_t size = m_capacity;
+		while(size < required_size) {
+			size *= 2;
+		}
+		if(size >= LOG_STRING_SIZE_MAX)
+			size = LOG_STRING_SIZE_MAX;
+		if(m_buf)
+			delete [] m_buf;
+		m_buf = new char[size];
+		m_capacity = size;
+	}
+	return {m_buf, m_capacity};
+}
 
 #ifdef USE_NAMESPACE
 }
