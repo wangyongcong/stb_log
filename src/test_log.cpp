@@ -1,9 +1,9 @@
+#include <cassert>
 #include <cstdio>
 #include <ctime>
 #include <random>
 #include <cstdarg>
-#define STB_LOG_IMPLEMENTATION
-#include "stb_log.h"
+#include "log.h"
 
 #ifdef USE_NAMESPACE
 using namespace STB_LOG_NAMESPACE;
@@ -141,9 +141,6 @@ void common_test()
 	CLogHandler *handlers[] = {
 		new CLogStdout(),
 		new CLogFile("log/test.log"),
-#if defined(_WIN32) || defined(_WIN64)
-		new CLogDebugWindow(),
-#endif
 	};
 	for (auto h: handlers)
 		logger->add_handler(h);
@@ -165,21 +162,12 @@ void common_test()
 		}
 	});
 
-#if defined(_WIN32) || defined(_WIN64)
-	std::thread th3([&] {
-		while (!handlers[2]->is_closed()) {
-			handlers[2]->process();
-			std::this_thread::yield();
-		}
-	});
-#endif
-
 	int i = 0;
 	float f = 3.1415926f;
 	const char *c = "const chars";
 	std::string s = "std::string";
 
-	logger->write(LOG_DEBUG, "DEBUG", "debug info: %d, %f, '%s', '%s'", i, f, c, s);
+	logger->write(LOG_DEBUG, "DEBUG", "debug info: %d, %f, '%s', '%s', '%s'", i, f, c, s, "string literal");
 	logger->write(LOG_INFO, "INFO", "common message");
 	logger->write(LOG_WARNING, "WARNING", "it's a warning");
 	logger->write(LOG_ERROR, "ERROR", "it's an error");
@@ -189,9 +177,6 @@ void common_test()
 	logger->close();
 	th1.join();
 	th2.join();
-#if defined(_WIN32) || defined(_WIN64)
-	th3.join();
-#endif
 
 	// cleanup up
 	for (auto h : handlers)
@@ -225,9 +210,6 @@ void usage_test()
 	printf("stb_log usage test start...\n");
 	start_logger();
 	start_file_logger("log/test.log");
-#if defined(_WIN32) || defined(_WIN64)
-	start_debug_logger();
-#endif
 
 #ifdef LOG_SEVERITY_LEVEL
 	constexpr int log_severity_level = LOG_SEVERITY_LEVEL;
@@ -251,12 +233,64 @@ void usage_test()
 	printf("success\n");
 }
 
+template<class T>
+auto Copy(T&& v)
+{
+	constexpr bool b = IsStringLiteral<decltype(v)>::value;
+	typename CopyableTypeT<T, b>::type s = v;
+	return s;
+}
+
+void type_trait_test()
+{
+	int i = 0;
+	int& iref = i;
+	const int& iref2 = i;
+	float f = 3.1415926f;
+	float& fref = f;
+	const float& fref2 = f;
+	const char *c = "const chars";
+	std::string s = "std::string";
+	std::string& sref = s;
+	const std::string& sref2 = s;
+	int data[] = {1, 2, 3};
+	const int* pdata = data;
+	const wchar_t *wc = L"const wide chars";
+	std::wstring ws = L"std::wstring";
+	std::wstring& wsref = ws;
+	const std::wstring& wsref2 = ws;
+
+	auto b1 = Copy("string literal");
+	auto b2 = Copy(s);
+	auto b3 = Copy(c);
+	auto b4 = Copy(sref);
+	auto b5 = Copy(sref2);
+	auto b6 = Copy(i);
+	auto b7 = Copy(iref);
+	auto b8 = Copy(f);
+	auto b9 = Copy(fref);
+	auto b10 = Copy(data);
+	auto b11 = Copy(pdata);
+	auto b12 = Copy(1);
+	auto b13 = Copy(3.14f);
+	auto b14 = Copy(std::string("rvalue"));
+	auto b15 = Copy(iref2);
+	auto b16 = Copy(fref2);
+	auto b17 = Copy(wc);
+	auto b18 = Copy(ws);
+	auto b19 = Copy(wsref);
+	auto b20 = Copy(wsref2);
+	auto b21 = Copy(L"wide string literal");
+
+	b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16, b17, b18, b19, b20, b21;
+}
+
 int main(int args, char *argv[])
 {
-//	thread_test();
-//	file_rotate_test();
-//	common_test();
-	usage_test();
-//	getchar();
+	thread_test();
+	// file_rotate_test();
+	common_test();
+	// usage_test();
+	type_trait_test();
 	return 0;
 }

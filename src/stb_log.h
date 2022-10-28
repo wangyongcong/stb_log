@@ -42,13 +42,22 @@
 #ifndef INCLUDE_STB_LOG_H
 #define INCLUDE_STB_LOG_H
 
-#include <cassert>
 #include <vector>
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
 #include <string>
+
+#if defined(_WINDOWS) && defined(STB_SHARED_LIBS)
+#ifdef stb_EXPORTS
+	#define STB_LOG_API __declspec(dllexport)
+#else
+	#define STB_LOG_API __declspec(dllimport)
+#endif
+#else
+#define STB_LOG_API
+#endif
 
 #ifdef USE_NAMESPACE
 #ifndef STB_LOG_NAMESPACE
@@ -60,7 +69,8 @@ namespace STB_LOG_NAMESPACE {
 // --------------------------------
 // library settings
 // --------------------------------
-enum StbLogLevel {
+enum StbLogLevel
+{
 	LOG_CRITICAL = 50,
 	LOG_ERROR = 40,
 	LOG_WARNING = 30,
@@ -87,7 +97,7 @@ enum StbLogLevel {
 #define LOG_BATCH_SIZE 64
 // string logger default buffer size
 #define LOG_STRING_SIZE 1024
-#define LOG_STRING_SIZE_MAX 1024 * 1024
+#define LOG_STRING_SIZE_MAX (1024 * 1024)
 // cache line size
 #ifndef CACHELINE_SIZE
 #define CACHELINE_SIZE 64
@@ -96,40 +106,42 @@ enum StbLogLevel {
 // stb_log namespace
 #ifdef USE_NAMESPACE
 #define STB_LOG_LEVEL STB_LOG_NAMESPACE::StbLogLevel
+#define LOGGER() STB_LOG_NAMESPACE::get_logger()
 #else
 #define STB_LOG_LEVEL StbLogLevel
+#define LOGGER() get_logger()
 #endif
 
 // write log
-#define log_write(lvl, channel, fmt, ...) (get_log_context()->logger->write(lvl, channel, (fmt), ##__VA_ARGS__))
+#define log_write(lvl, channel, fmt, ...) (LOGGER()->write(lvl, channel, (fmt), ##__VA_ARGS__))
 #ifdef LOG_SEVERITY_LEVEL
 // write critical log
 #if LOG_SEVERITY_LEVEL <= 50
-#define log_critical(fmt, ...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", (fmt), ##__VA_ARGS__))
+#define log_critical(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", (fmt), ##__VA_ARGS__))
 #else
 #define log_critical(fmt,...)
 #endif
 // write error log
 #if LOG_SEVERITY_LEVEL <= 40
-#define log_error(fmt, ...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", (fmt), ##__VA_ARGS__))
+#define log_error(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", (fmt), ##__VA_ARGS__))
 #else
 #define log_error(fmt,...)
 #endif
 // write warning log
 #if LOG_SEVERITY_LEVEL <= 30
-#define log_warning(fmt, ...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", (fmt), ##__VA_ARGS__))
+#define log_warning(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", (fmt), ##__VA_ARGS__))
 #else
 #define log_warning(fmt,...)
 #endif
 // write info log
 #if LOG_SEVERITY_LEVEL <= 20
-#define log_info(fmt, ...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_INFO, "INFO", (fmt), ##__VA_ARGS__))
+#define log_info(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_INFO, "INFO", (fmt), ##__VA_ARGS__))
 #else
 #define log_info(fmt,...)
 #endif
 // write debug log
 #if LOG_SEVERITY_LEVEL <= 10
-#define log_debug(fmt, ...) (get_log_context()->logger->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", (fmt), ##__VA_ARGS__))
+#define log_debug(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", (fmt), ##__VA_ARGS__))
 #else
 #define log_debug(fmt,...)
 #endif
@@ -147,115 +159,186 @@ enum StbLogLevel {
 class CLogger;
 class CLogHandler;
 
-struct LogContext {
-	CLogger *logger;
+struct LogContext
+{
+	CLogger* logger = nullptr;
 	std::vector<std::unique_ptr<std::thread>> thread_pool;
 };
+
 typedef std::chrono::milliseconds::rep millisecond_t;
 
-// get global logger info
-inline LogContext *get_log_context() {
-	static LogContext s_logger_context;
-	return &s_logger_context;
-}
-
 // get global logger
-inline CLogger* get_logger() {
-	return get_log_context()->logger;
-}
+STB_LOG_API CLogger* get_logger();
 
 // close logger
-void close_logger();
+STB_LOG_API void close_logger();
 
 // start a logger thread
-void start_handler_thread(CLogHandler *handler, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+STB_LOG_API void start_handler_thread(CLogHandler* handler, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
 // start logging to standard output
-CLogHandler* start_logger(bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+STB_LOG_API void start_logger(bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
 
 // start logging to file
-CLogHandler* start_file_logger(const char *log_file_path,
-                       bool append_mode = false,
-                       int max_rotation = LOG_FILE_ROTATE_COUNT,
-                       size_t rotate_size = LOG_FILE_ROTATE_SIZE,
-					   bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME
+STB_LOG_API void start_file_logger(const char* log_file_path,
+                                   bool append_mode = false,
+                                   int max_rotation = LOG_FILE_ROTATE_COUNT,
+                                   size_t rotate_size = LOG_FILE_ROTATE_SIZE,
+                                   bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME
 );
 
 // start logging to string buffer
-CLogHandler* start_string_logger(size_t buffer_size = LOG_STRING_SIZE,
-								 bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+STB_LOG_API void start_string_logger(size_t buffer_size = LOG_STRING_SIZE,
+                                     bool async = true, millisecond_t sleep_time = LOG_WORKER_SLEEP_TIME);
+
+// convert to data that can be copied between threads
+// string literal has type "const char (&)[N]". It can be copied as pointer.
+
+template<class T>
+struct IsStringLiteral : std::false_type
+{
+};
+
+template<size_t N>
+struct IsStringLiteral<const char (&)[N]> : std::true_type
+{
+};
+
+template<size_t N>
+struct IsStringLiteral<const wchar_t (&)[N]> : std::true_type
+{
+};
+
+template<class T>
+struct CastStringType
+{
+	typedef T type;
+};
+
+template<>
+struct CastStringType<char*>
+{
+	typedef std::string type;
+};
+
+template<>
+struct CastStringType<const char*>
+{
+	typedef std::string type;
+};
+
+template<>
+struct CastStringType<wchar_t*>
+{
+	typedef std::wstring type;
+};
+
+template<>
+struct CastStringType<const wchar_t*>
+{
+	typedef std::wstring type;
+};
+
+template<class T>
+struct RemoveConstRef
+{
+	typedef std::remove_const_t<std::remove_reference_t<std::decay_t<T>>> type;
+};
+
+template<class T, bool IsStringLiteral=IsStringLiteral<T>::value>
+struct CopyableTypeT
+{
+	typedef typename CastStringType<typename RemoveConstRef<T>::type>::type type;
+};
+
+template<class T>
+struct CopyableTypeT<T, true>
+{
+	typedef T type;
+};
+
+template <class T>
+using CopyableType = typename CopyableTypeT<T>::type;
 
 // convert any value to primitive types that can be recognized by printf
 // add overload functions to customize type conversion
-template<class T>
-inline T to_printable(const T v) {
+template <class T>
+inline T to_printable(const T v)
+{
 	return v;
 }
 
-inline const char* to_printable(const std::string &v) {
+inline const char* to_printable(const std::string& v)
+{
 	return v.c_str();
 }
 
-inline const wchar_t* to_printable(const std::wstring &v) {
+inline const wchar_t* to_printable(const std::wstring& v)
+{
 	return v.c_str();
 }
 
-inline const uint64_t to_printable(std::thread::id tid) {
+inline uint64_t to_printable(std::thread::id tid)
+{
 	// if-constexpr
 	constexpr bool is_size64 = sizeof(std::thread::id) == sizeof(uint64_t);
-	if(is_size64)
+	if (is_size64)
 		return *(uint64_t*)&tid;
-	else {
+	else
+	{
 		std::hash<std::thread::id> hasher;
 		return hasher(tid);
 	}
 }
-	
+
 // --------------------------------
 // END of interface declaration
 // --------------------------------
 
-struct alignas(CACHELINE_SIZE) Sequence {
+struct alignas(CACHELINE_SIZE) Sequence
+{
 	std::atomic<uint64_t> value;
 	char _padding[CACHELINE_SIZE - sizeof(std::atomic<uint64_t>)];
 
-	inline void set(uint64_t v) {
+	inline void set(uint64_t v)
+	{
 		value = v;
 	}
 
-	inline uint64_t get() const {
+	inline uint64_t get() const
+	{
 		return value;
 	}
 
-	inline uint64_t load() const {
+	inline uint64_t load() const
+	{
 		return value.load(std::memory_order::memory_order_acquire);
 	}
 
-	inline void store(uint64_t v) {
+	inline void store(uint64_t v)
+	{
 		value.store(v, std::memory_order::memory_order_release);
 	}
 
-	inline uint64_t fetch_add(uint64_t v) {
+	inline uint64_t fetch_add(uint64_t v)
+	{
 		return value.fetch_add(v, std::memory_order::memory_order_relaxed);
 	}
 };
 
-void *aligned_alloc(size_t alignment, size_t size);
-void aligned_free(void *ptr);
-
 using LogEventTime = std::chrono::system_clock::time_point;
 
 struct LogData;
-typedef void (*LogWriter)(const LogData *log, void *context);
+typedef void (*LogWriter)(const LogData* log, void* context);
 
 struct LogData
 {
 	int level;
 	LogEventTime time;
-	const char *channel;
-	const LogWriter *writer;
+	const char* channel;
+	const LogWriter* writer;
 };
-	
+
 struct LogEvent
 {
 	// 1 cacheline for shared publish flag
@@ -265,63 +348,91 @@ struct LogEvent
 	char _padding[CACHELINE_SIZE - sizeof(std::shared_ptr<void>)];
 };
 
-template<class F, size_t... Is>
-constexpr auto index_apply_impl(F f, std::index_sequence<Is...>) {
+template <class F, size_t... Is>
+constexpr auto index_apply_impl(F f, std::index_sequence<Is...>)
+{
 	return f(std::integral_constant<size_t, Is>{}...);
 }
 
-template<size_t N, class F>
-constexpr auto index_apply(F f) {
+template <size_t N, class F>
+constexpr auto index_apply(F f)
+{
 	return index_apply_impl(f, std::make_index_sequence<N>{});
 }
-	
+
+template <class Tuple, size_t... Is>
+constexpr auto printf_tuple(const Tuple& t, std::index_sequence<Is...>)
+{
+	printf(to_printable(std::get<Is>(t))...);
+}
+
+template <class Tuple, size_t... Is>
+constexpr auto fprintf_tuple(std::pair<FILE*, long>* out, const Tuple& t, std::index_sequence<Is...>)
+{
+	out->second = fprintf(out->first, to_printable(std::get<Is>(t))...);
+}
+
+template <class Tuple, size_t... Is>
+constexpr auto sprintf_tuple(std::pair<char*, size_t>* out, const Tuple& t, std::index_sequence<Is...>)
+{
+	out->second = snprintf(out->first, out->second, to_printable(std::get<Is>(t))...);
+}
+
 enum ELogWriterType
 {
 	LOG_WRITER_STDOUT,
 	LOG_WRITER_FILE,
 	LOG_WRITER_STRING,
-	
+
 	LOG_WRITER_COUNT
 };
 
-template<typename... Args>
-struct GenericLogWriter {
+template <class Tuple>
+struct GenericLogData : LogData
+{
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-security"
+#endif
+	alignas(Tuple) char data[sizeof(Tuple)];
 
-	static void write_stdout(const LogData *log, void *context) {
-		using tuple_t = std::tuple<const char *, Args...>;
-		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
-		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
-		index_apply<tuple_size>([t](auto... Is) {
-			printf(to_printable(std::get<Is>(*t))...);
-		});
+	~GenericLogData()
+	{
+		((Tuple*)data)->~Tuple();
 	}
 
-	static void write_file(const LogData *log, void *context) {
-		using tuple_t = std::tuple<const char *, Args...>;
-		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
-		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
+	static void write_stdout(const LogData* entry, void* context)
+	{
+		const GenericLogData* self = (const GenericLogData*)entry;
+		constexpr size_t N = std::tuple_size_v<Tuple>;
+		auto t = reinterpret_cast<const Tuple*>(self->data);
+		printf_tuple(*t, std::make_index_sequence<N>{});
+	}
+
+	static void write_file(const LogData* entry, void* context)
+	{
+		const GenericLogData* self = (const GenericLogData*)entry;
+		constexpr size_t N = std::tuple_size_v<Tuple>;
+		auto t = reinterpret_cast<const Tuple*>(self->data);
 		auto c = (std::pair<FILE*, long>*)context;
-		index_apply<tuple_size>([t, c](auto... Is) {
-			c->second = fprintf(c->first, to_printable(std::get<Is>(*t))...);
-		});
+		fprintf_tuple(c, *t, std::make_index_sequence<N>{});
 	}
 
-	static void write_string(const LogData *log, void *context) {
-		using tuple_t = std::tuple<const char *, Args...>;
-		constexpr size_t tuple_size = std::tuple_size<tuple_t>::value;
-		auto t = reinterpret_cast<const tuple_t *>((const char *) log + sizeof(LogData));
+	static void write_string(const LogData* entry, void* context)
+	{
+		const GenericLogData* self = (const GenericLogData*)entry;
+		constexpr size_t N = std::tuple_size_v<Tuple>;
+		auto t = reinterpret_cast<const Tuple*>(self->data);
 		auto c = (std::pair<char*, size_t>*)context;
-		index_apply<tuple_size>([t, c](auto... Is) {
-			c->second = snprintf(c->first, c->second, to_printable(std::get<Is>(*t))...);
-		});
-
+		sprintf_tuple(c, *t, std::make_index_sequence<N>{});
 	}
-	
-#pragma clang diagnostic pop
 
-	static const LogWriter* get_writer() {
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+	static const LogWriter* get_writer()
+	{
 		static const LogWriter s_writer_table[LOG_WRITER_COUNT] = {
 			&write_stdout,
 			&write_file,
@@ -331,21 +442,22 @@ struct GenericLogWriter {
 	}
 };
 
-typedef bool (*LogFilter)(const LogData *);
+typedef bool (*LogFilter)(const LogData*);
 
 class CLogger;
 
-class CLogTimeFormatter {
+class CLogTimeFormatter
+{
 public:
-	virtual ~CLogTimeFormatter() {}
-
-	virtual const char *format_time(LogEventTime t) = 0;
+	virtual ~CLogTimeFormatter() = default;
+	virtual const char* format_time(LogEventTime t) = 0;
 };
 
 // time string format: "HH:MM:SS", 8 char
-class CTimeFormatter : public CLogTimeFormatter {
+class CTimeFormatter : public CLogTimeFormatter
+{
 public:
-	virtual const char *format_time(LogEventTime t) override;
+	const char* format_time(LogEventTime t) override;
 
 private:
 	static constexpr unsigned MAX_LENGTH = 9;
@@ -353,9 +465,10 @@ private:
 };
 
 // time string format: "HH:MM:SS.xxx", 12 char
-class CMsTimeFormatter : public CLogTimeFormatter {
+class CMsTimeFormatter : public CLogTimeFormatter
+{
 public:
-	virtual const char *format_time(LogEventTime t) override;
+	const char* format_time(LogEventTime t) override;
 
 private:
 	static constexpr unsigned MAX_LENGTH = 13;
@@ -363,58 +476,67 @@ private:
 };
 
 // time string format: "YYYY-MM-DD HH:MM:SS", 19 char
-class CDateTimeFormatter : public CLogTimeFormatter {
+class CDateTimeFormatter : public CLogTimeFormatter
+{
 public:
-	virtual const char *format_time(LogEventTime t) override;
+	const char* format_time(LogEventTime t) override;
 
 private:
 	static constexpr unsigned MAX_LENGTH = 20;
 	char m_buf[MAX_LENGTH];
 };
 
-class CLogHandler {
+class CLogHandler
+{
 public:
-	static void *operator new(size_t size) {
-		return aligned_alloc(alignof(CLogHandler), size);
-	}
-
-	static void operator delete(void *ptr) {
-		aligned_free(ptr);
-	}
+	static void* operator new(size_t size);
+	static void operator delete(void* ptr);
 
 	CLogHandler();
 	virtual ~CLogHandler();
 	void process();
 	virtual void flush();
-	virtual void process_event(const LogData *data) {};
-	virtual void on_close() {};
 
-	inline void follow(CLogger *seq) {
+	virtual void process_event(const LogData* data)
+	{
+	}
+
+	virtual void on_close()
+	{
+	}
+
+	inline void follow(CLogger* seq)
+	{
 		m_logger = seq;
 	}
 
-	inline uint64_t get_sequence() const {
+	inline uint64_t get_sequence() const
+	{
 		return m_seq.get();
 	}
 
-	inline uint64_t acquire_sequence() const {
+	inline uint64_t acquire_sequence() const
+	{
 		return m_seq.load();
 	}
 
-	inline void set_filter(LogFilter filter) {
+	inline void set_filter(LogFilter filter)
+	{
 		m_filter = filter;
 	}
 
-	inline bool is_closed() const {
+	inline bool is_closed() const
+	{
 		return m_closed;
 	}
 
-	inline void set_time_formatter(std::unique_ptr<CLogTimeFormatter> &&ptr) {
+	inline void set_time_formatter(std::unique_ptr<CLogTimeFormatter>&& ptr)
+	{
 		m_formatter = std::move(ptr);
 	}
 
 protected:
-	CLogger *m_logger;
+	CLogger* m_logger;
 	LogFilter m_filter;
 	std::unique_ptr<CLogTimeFormatter> m_formatter;
 	std::vector<std::shared_ptr<void>> m_batch;
@@ -422,14 +544,16 @@ protected:
 	Sequence m_seq;
 };
 
-class CLogStdout : public CLogHandler {
+class CLogStdout : public CLogHandler
+{
 public:
-	virtual void process_event(const LogData *log) override;
+	virtual void process_event(const LogData* log) override;
 };
 
 // platform dependence filesystem api
 // It should be replaced by std::filesystem (C++17) if possible
-class CLogFileSystem {
+class CLogFileSystem
+{
 public:
 #if defined(_WIN32) || defined(_WIN64)
 	static constexpr char seperator = '\\';
@@ -439,52 +563,55 @@ public:
 	static constexpr char reversed_seperator = '\\';
 #endif
 
-	static void normpath(std::string &path);
+	static void normpath(std::string& path);
 
-	static void split(const std::string &path, std::string &dir, std::string &file_name);
+	static void split(const std::string& path, std::string& dir, std::string& file_name);
 
-	static void split_ext(const std::string &file_name, std::string &base_name, std::string &ext);
+	static void split_ext(const std::string& file_name, std::string& base_name, std::string& ext);
 
-	static bool isdir(const std::string &path);
+	static bool isdir(const std::string& path);
 
-	static bool isfile(const std::string &path);
+	static bool isfile(const std::string& path);
 
-	static bool makedirs(const std::string &path);
+	static bool makedirs(const std::string& path);
 };
 
-class CLogFile : public CLogHandler {
+class CLogFile : public CLogHandler
+{
 public:
-	CLogFile(const char *filepath, bool append = false, int rotate_count = LOG_FILE_ROTATE_COUNT,
+	CLogFile(const char* filepath, bool append = false, int rotate_count = LOG_FILE_ROTATE_COUNT,
 	         size_t rotate_size = LOG_FILE_ROTATE_SIZE);
-
-	virtual ~CLogFile();
-
+	virtual ~CLogFile() override;
 	virtual void flush() override;
-	virtual void process_event(const LogData *log) override;
+	virtual void process_event(const LogData* log) override;
 	virtual void on_close() override;
 
-	inline bool is_ready() const {
+	inline bool is_ready() const
+	{
 		return m_hfile != nullptr;
 	}
 
-	inline const std::string &get_directory() const {
+	inline const std::string& get_directory() const
+	{
 		return m_logpath;
 	}
 
-	inline const std::string &get_base_name() const {
+	inline const std::string& get_base_name() const
+	{
 		return m_logname;
 	}
 
-	inline const std::string &get_file_path() const {
+	inline const std::string& get_file_path() const
+	{
 		return m_curfile;
 	}
 
 	void rotate();
 
 private:
-	static FILE *_share_open(const char *path, const char *mode);
+	static FILE* _share_open(const char* path, const char* mode);
 
-	FILE *m_hfile;
+	FILE* m_hfile;
 	std::string m_logpath;
 	std::string m_logname;
 	std::string m_curfile;
@@ -492,29 +619,37 @@ private:
 	size_t m_rotate_size;
 	int m_rotate_count;
 };
-	
+
 class CCustomLog : public CLogHandler
 {
 public:
 	CCustomLog();
-	virtual ~CCustomLog() {}
-	virtual void process_event(const LogData *log) override;
+
+	virtual void process_event(const LogData* log) override;
 	// get C string
-	inline const char *str() const {
+	inline const char* str() const
+	{
 		return m_str.first;
 	}
+
 	// get string size
-	inline size_t size() const {
+	inline size_t size() const
+	{
 		return m_str.second;
 	}
+
 protected:
 	virtual std::pair<char*, size_t> getstr(size_t required_size) = 0;
-	virtual void setstr(size_t size) {}
-	virtual void handle_error(const LogData *log);
-	
+
+	virtual void setstr(size_t size)
+	{
+	}
+
+	virtual void handle_error(const LogData* log);
+
 	std::pair<char*, size_t> m_str;
 };
-	
+
 class CLogString : public CCustomLog
 {
 public:
@@ -525,74 +660,81 @@ protected:
 	virtual std::pair<char*, size_t> getstr(size_t required_size) override;
 
 private:
-	char *m_buf;
+	char* m_buf;
 	size_t m_capacity;
 };
 
-class CLogger {
+class STB_LOG_API CLogger
+{
 public:
 	CLogger(size_t buf_size);
 	~CLogger();
-	CLogger(const CLogger &) = delete;
-	CLogger &operator=(const CLogger &) = delete;
+	CLogger(const CLogger&) = delete;
+	CLogger& operator=(const CLogger&) = delete;
 	// notify all handlers to close
 	void close();
-	void add_handler(CLogHandler *handler);
-	void remove_handler(CLogHandler *handler);
+	void add_handler(CLogHandler* handler);
+	void remove_handler(CLogHandler* handler);
 	// release all handlers
 	// assume self own the handlers, and handlers are allocated by new operator
 	void release_handlers();
 	// send log message to handlers
-	template<class... Args>
-	void write(int level, const char *channel, const char *format, Args... args) {
-		using tuple_t = std::tuple<const char *, Args...>;
-		struct entry_t  {
-			LogData base;
-			tuple_t data;
-		};
+	template <class... Args>
+	void write(int level, const char* channel, const char* format, Args&& ...args)
+	{
+		using tuple_t = std::tuple<const char*, CopyableType<decltype(args)>...>;
+		using entry_t = GenericLogData<tuple_t>;
 		auto sptr = std::make_shared<entry_t>();
-		sptr->data = {format, args...};
-		sptr->base.writer = GenericLogWriter<Args...>::get_writer();
+		new(sptr->data) tuple_t{format, std::forward<Args>(args)...};
+		sptr->writer = entry_t::get_writer();
 		_publish(level, channel, sptr);
 	}
+
 	// send any data to handlers
-	template<class T>
-	void write(int level, const char *channel, const T &obj) {
-		struct entry_t {
-			LogData base;
+	template <class T>
+	void write(int level, const char* channel, const T& obj)
+	{
+		struct entry_t : LogData
+		{
 			T data;
 		};
 		auto sptr = std::make_shared<entry_t>();
 		sptr->data = obj;
-		sptr->base.writer = nullptr;
+		sptr->writer = nullptr;
 		_publish(level, channel, sptr);
 	}
 
-	inline const LogEvent *get_event(uint64_t seq) const {
+	void write(int level, const char* channel, const std::string& obj)
+	{
+		write(level, channel, "%s", obj);
+	}
+
+	inline void write(int level, const char* channel, const char* cstr)
+	{
+		write(level, channel, "%s", cstr);
+	}
+
+	inline const LogEvent* get_event(uint64_t seq) const
+	{
 		return m_event_queue + (seq & m_size_mask);
 	}
 
-	inline LogEvent *get_event(uint64_t seq) {
+	inline LogEvent* get_event(uint64_t seq)
+	{
 		return m_event_queue + (seq & m_size_mask);
 	}
 
-	static void *operator new(size_t size) {
-		return aligned_alloc(alignof(CLogger), size);
-	}
-
-	static void operator delete(void *ptr) {
-		aligned_free(ptr);
-	}
-
+	static void* operator new(size_t size);
+	static void operator delete(void* ptr);
 	static size_t get_next_power2(size_t val);
 
 private:
 	uint64_t _claim(uint64_t count);
-	void _publish(int level, const char *channel, std::shared_ptr<void> sptr);
+	void _publish(int level, const char* channel, std::shared_ptr<void> sptr);
 
-	LogEvent *m_event_queue;
+	LogEvent* m_event_queue;
 	size_t m_size_mask;
-	std::vector<CLogHandler *> m_handler_list;
+	std::vector<CLogHandler*> m_handler_list;
 	uint64_t m_min_seq;
 	Sequence m_seq_claim;
 };
@@ -603,19 +745,30 @@ private:
 #endif // NCLUDE_STB_LOG_H
 
 #ifdef STB_LOG_IMPLEMENTATION
-
-#include <emmintrin.h>
 #include <sys/stat.h>
 #include <cstdarg>
 #include <ctime>
 #include <string>
 #include <algorithm>
+#include <cassert>
 
 #define ASSERT_ALIGNMENT(ptr, align) assert((ptr) && ((uintptr_t(ptr) % (align)) == 0))
 
 #ifdef USE_NAMESPACE
 namespace STB_LOG_NAMESPACE {
 #endif
+
+// get global logger info
+inline LogContext* get_log_context() {
+	static LogContext s_logger_context;
+	return &s_logger_context;
+}
+
+// get global logger
+CLogger* get_logger()
+{
+	return get_log_context()->logger;
+}
 
 inline LogContext* add_log_handler(CLogHandler *handler)
 {
@@ -651,17 +804,16 @@ void close_logger() {
 	lc->logger = nullptr;
 }
 
-CLogHandler* start_logger(bool async, millisecond_t sleep_time) {
+void start_logger(bool async, millisecond_t sleep_time) {
 	CLogStdout *handler = new CLogStdout();
 	handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
 	if(async)
 		start_handler_thread(handler, sleep_time);
 	else
 		add_log_handler(handler);
-	return handler;
 }
 
-CLogHandler* start_file_logger(const char *log_file_path, bool append_mode, int max_rotation,
+void start_file_logger(const char *log_file_path, bool append_mode, int max_rotation,
 					   size_t rotate_size, bool async, millisecond_t sleep_time) {
 	CLogFile *handler = new CLogFile(log_file_path, append_mode, max_rotation, rotate_size);
 	handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
@@ -669,10 +821,9 @@ CLogHandler* start_file_logger(const char *log_file_path, bool append_mode, int 
 		start_handler_thread(handler, sleep_time);
 	else
 		add_log_handler(handler);
-	return handler;
 }
 	
-CLogHandler* start_string_logger(size_t buffer_size, bool async, millisecond_t sleep_time)
+void start_string_logger(size_t buffer_size, bool async, millisecond_t sleep_time)
 {
 	CLogString *handler = new CLogString(buffer_size);
 	handler->set_time_formatter(std::make_unique<CDateTimeFormatter>());
@@ -680,10 +831,9 @@ CLogHandler* start_string_logger(size_t buffer_size, bool async, millisecond_t s
 		start_handler_thread(handler, sleep_time);
 	else
 		add_log_handler(handler);
-	return handler;
 }
 
-void *aligned_alloc(size_t alignment, size_t size) {
+static void *stblog_aligned_alloc(size_t alignment, size_t size) {
 	// [Memory returned][ptr to start of memory][aligned memory][extra memory]
 	size_t request_size = size + alignment;
 	void *raw = malloc(request_size + sizeof(void *));
@@ -699,7 +849,7 @@ void *aligned_alloc(size_t alignment, size_t size) {
 	return ptr;
 }
 
-void aligned_free(void *ptr) {
+static void stblog_aligned_free(void *ptr) {
 	void *raw = *((void **) ptr - 1);
 	free(raw);
 }
@@ -727,13 +877,21 @@ size_t CLogger::get_next_power2(size_t val) {
 // CLogger implementation
 // --------------------------------
 	
+void* CLogger::operator new(size_t size) {
+	return stblog_aligned_alloc(alignof(CLogger), size);
+}
+
+void CLogger::operator delete(void* ptr) {
+	stblog_aligned_free(ptr);
+}
+
 CLogger::CLogger(size_t size) {
 	assert(size > 0);
 	if (size & (size - 1))
 		size = get_next_power2(size);
 	static_assert(sizeof(LogEvent) % CACHELINE_SIZE == 0, "LogEvent should be fit in cacheline.");
 	size_t buf_size = sizeof(LogEvent) * size;
-	m_event_queue = (LogEvent *) aligned_alloc(CACHELINE_SIZE, buf_size);
+	m_event_queue = (LogEvent *) stblog_aligned_alloc(CACHELINE_SIZE, buf_size);
 	ASSERT_ALIGNMENT(m_event_queue, CACHELINE_SIZE);
 	m_size_mask = size - 1;
 	for (size_t i = 0; i < size; ++i) {
@@ -757,7 +915,7 @@ CLogger::~CLogger() {
 		LogEvent *log = &m_event_queue[i];
 		log->~LogEvent();
 	}
-	aligned_free(m_event_queue);
+	stblog_aligned_free(m_event_queue);
 	m_event_queue = nullptr;
 }
 
@@ -850,6 +1008,14 @@ void CLogger::close() {
 // CLogHandler implementation
 // --------------------------------
 
+void* CLogHandler::operator new(size_t size) {
+	return stblog_aligned_alloc(alignof(CLogHandler), size);
+}
+
+void CLogHandler::operator delete(void* ptr) {
+	stblog_aligned_free(ptr);
+}
+
 CLogHandler::CLogHandler()
 		: m_logger(nullptr), m_filter(nullptr), m_formatter(nullptr), m_closed(false)
 {
@@ -879,7 +1045,7 @@ void CLogHandler::process() {
 		data = (LogData*)(log->data.get());
 		if (!data) {
 			m_closed = true;
-		} else if (!m_filter or m_filter(data)) {
+		} else if (!m_filter || m_filter(data)) {
 			m_batch.push_back(log->data);
 		}
 		m_seq.store(pub);

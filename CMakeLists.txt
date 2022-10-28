@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.3)
 
 PROJECT(stb_log)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(NAMESPACE_NAME "" CACHE STRING "Wrap log apis with namespace")
 
 if(NOT NAMESPACE_NAME STREQUAL "")
@@ -10,7 +10,7 @@ if(NOT NAMESPACE_NAME STREQUAL "")
 	add_definitions("-DUSE_NAMESPACE -DSTB_LOG_NAMESPACE=\"${NAMESPACE_NAME}\"")
 endif()
 
-add_definitions("-DLOG_SEVERITY_LEVEL=0")
+add_definitions(-DLOG_SEVERITY_LEVEL=0)
 
 #message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
 
@@ -21,13 +21,17 @@ else()
 endif()
 
 SET(source
-	stb_log.h
-	test_log.cpp
+	src/log.h
+	src/log.cpp
+	src/test_log.cpp
 )
 
-ADD_EXECUTABLE(
-	test_log
-	${source}
-)
+enable_testing()
 
-add_subdirectory(benchmark)
+add_executable(test_log ${source})
+
+target_compile_definitions(test_log PRIVATE -DSTB_LOG_IMPLEMENTATION)
+
+add_test(NAME test_log COMMAND test_log)
+
+# add_subdirectory(benchmark)
