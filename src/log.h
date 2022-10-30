@@ -72,35 +72,35 @@ enum StbLogLevel
 #endif
 
 // write log
-#define log_write(lvl, channel, fmt, ...) (LOGGER()->write(lvl, channel, (fmt), ##__VA_ARGS__))
+#define log_write(lvl, channel, fmt, ...) (LOGGER()->write(lvl, channel, nullptr, 0, (fmt), ##__VA_ARGS__))
 #ifdef LOG_SEVERITY_LEVEL
 // write critical log
 #if LOG_SEVERITY_LEVEL <= 50
-#define log_critical(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", (fmt), ##__VA_ARGS__))
+#define log_critical(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_CRITICAL, "CRITICAL", __FILE__, __LINE__, (fmt), ##__VA_ARGS__))
 #else
 #define log_critical(fmt,...)
 #endif
 // write error log
 #if LOG_SEVERITY_LEVEL <= 40
-#define log_error(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", (fmt), ##__VA_ARGS__))
+#define log_error(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_ERROR, "ERROR", __FILE__, __LINE__, (fmt), ##__VA_ARGS__))
 #else
 #define log_error(fmt,...)
 #endif
 // write warning log
 #if LOG_SEVERITY_LEVEL <= 30
-#define log_warning(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", (fmt), ##__VA_ARGS__))
+#define log_warning(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_WARNING, "WARNING", nullptr, 0, (fmt), ##__VA_ARGS__))
 #else
 #define log_warning(fmt,...)
 #endif
 // write info log
 #if LOG_SEVERITY_LEVEL <= 20
-#define log_info(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_INFO, "INFO", (fmt), ##__VA_ARGS__))
+#define log_info(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_INFO, "INFO", nullptr, 0, (fmt), ##__VA_ARGS__))
 #else
 #define log_info(fmt,...)
 #endif
 // write debug log
 #if LOG_SEVERITY_LEVEL <= 10
-#define log_debug(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", (fmt), ##__VA_ARGS__))
+#define log_debug(fmt, ...) (LOGGER()->write(STB_LOG_LEVEL::LOG_DEBUG, "DEBUG", nullptr, 0, (fmt), ##__VA_ARGS__))
 #else
 #define log_debug(fmt,...)
 #endif
@@ -240,8 +240,7 @@ inline const wchar_t* to_printable(const std::wstring& v)
 inline uint64_t to_printable(std::thread::id tid)
 {
 	// if-constexpr
-	constexpr bool is_size64 = sizeof(std::thread::id) == sizeof(uint64_t);
-	if (is_size64)
+	if constexpr (sizeof(std::thread::id) == sizeof(uint64_t))
 		return *(uint64_t*)&tid;
 	else
 	{
@@ -293,6 +292,8 @@ typedef void (*LogWriter)(const LogData* log, void* context);
 struct LogData
 {
 	int level;
+	int source_line;
+	const char* source_file;
 	LogEventTime time;
 	const char* channel;
 	const LogWriter* writer;
@@ -392,7 +393,7 @@ struct GenericLogData : LogData
 
 	static const LogWriter* get_writer()
 	{
-		static const LogWriter s_writer_table[LOG_WRITER_COUNT] = {
+		static constexpr LogWriter s_writer_table[LOG_WRITER_COUNT] = {
 			&write_stdout,
 			&write_file,
 			&write_string,
@@ -416,6 +417,7 @@ public:
 class CTimeFormatter : public CLogTimeFormatter
 {
 public:
+	CTimeFormatter() { m_buf[0] = 0; }
 	const char* format_time(LogEventTime t) override;
 
 private:
@@ -427,6 +429,7 @@ private:
 class CMsTimeFormatter : public CLogTimeFormatter
 {
 public:
+	CMsTimeFormatter() { m_buf[0] = 0; }
 	const char* format_time(LogEventTime t) override;
 
 private:
@@ -438,6 +441,7 @@ private:
 class CDateTimeFormatter : public CLogTimeFormatter
 {
 public:
+	CDateTimeFormatter() { m_buf[0] = 0; }
 	const char* format_time(LogEventTime t) override;
 
 private:
@@ -453,16 +457,15 @@ public:
 
 	CLogHandler();
 	virtual ~CLogHandler();
+	CLogHandler(const CLogHandler&) = delete;
+	CLogHandler(CLogHandler&&) = delete;
+	CLogHandler& operator=(const CLogHandler&) = delete;
+	CLogHandler& operator=(CLogHandler&&) = delete;
+
 	void process();
 	virtual void flush();
-
-	virtual void process_event(const LogData* data)
-	{
-	}
-
-	virtual void on_close()
-	{
-	}
+	virtual void process_event(const LogData* data) {}
+	virtual void on_close() {}
 
 	inline void follow(CLogger* seq)
 	{
@@ -506,7 +509,7 @@ protected:
 class CLogStdout : public CLogHandler
 {
 public:
-	virtual void process_event(const LogData* log) override;
+	void process_event(const LogData* log) override;
 };
 
 // platform dependence filesystem api
@@ -540,32 +543,28 @@ class CLogFile : public CLogHandler
 public:
 	CLogFile(const char* filepath, bool append = false, int rotate_count = LOG_FILE_ROTATE_COUNT,
 	         size_t rotate_size = LOG_FILE_ROTATE_SIZE);
-	virtual ~CLogFile() override;
-	virtual void flush() override;
-	virtual void process_event(const LogData* log) override;
-	virtual void on_close() override;
+	~CLogFile() override;
+	void flush() override;
+	void process_event(const LogData* log) override;
+	void on_close() override;
+	void rotate();
 
-	inline bool is_ready() const
+	bool is_ready() const
 	{
 		return m_hfile != nullptr;
 	}
-
-	inline const std::string& get_directory() const
+	const std::string& get_directory() const
 	{
 		return m_logpath;
 	}
-
-	inline const std::string& get_base_name() const
+	const std::string& get_base_name() const
 	{
 		return m_logname;
 	}
-
-	inline const std::string& get_file_path() const
+	const std::string& get_file_path() const
 	{
 		return m_curfile;
 	}
-
-	void rotate();
 
 private:
 	static FILE* _share_open(const char* path, const char* mode);
@@ -583,16 +582,14 @@ class CCustomLog : public CLogHandler
 {
 public:
 	CCustomLog();
-
-	virtual void process_event(const LogData* log) override;
+	 void process_event(const LogData* log) override;
 	// get C string
-	inline const char* str() const
+	const char* str() const
 	{
 		return m_str.first;
 	}
-
 	// get string size
-	inline size_t size() const
+	size_t size() const
 	{
 		return m_str.second;
 	}
@@ -613,10 +610,10 @@ class CLogString : public CCustomLog
 {
 public:
 	CLogString(size_t init_size = LOG_STRING_SIZE);
-	virtual ~CLogString();
+	~CLogString() override;
 
 protected:
-	virtual std::pair<char*, size_t> getstr(size_t required_size) override;
+	std::pair<char*, size_t> getstr(size_t required_size) override;
 
 private:
 	char* m_buf;
@@ -629,7 +626,9 @@ public:
 	CLogger(size_t buf_size);
 	~CLogger();
 	CLogger(const CLogger&) = delete;
+	CLogger(CLogger&&) = delete;
 	CLogger& operator=(const CLogger&) = delete;
+	CLogger& operator=(CLogger&&) = delete;
 	// notify all handlers to close
 	void close();
 	void add_handler(CLogHandler* handler);
@@ -639,14 +638,19 @@ public:
 	void release_handlers();
 	// send log message to handlers
 	template <class... Args>
-	void write(int level, const char* channel, const char* format, Args&& ...args)
+	void write(int level, const char* channel, const char* source_file, int source_line, const char* format, Args&& ...args)
 	{
 		using tuple_t = std::tuple<const char*, CopyableType<decltype(args)>...>;
 		using entry_t = GenericLogData<tuple_t>;
 		auto sptr = std::make_shared<entry_t>();
 		new(sptr->data) tuple_t{format, std::forward<Args>(args)...};
+		sptr->level = level;
+		sptr->channel = channel;
+		sptr->source_file = source_file;
+		sptr->source_line = source_line;
+		sptr->time = std::chrono::system_clock::now();
 		sptr->writer = entry_t::get_writer();
-		_publish(level, channel, sptr);
+		publish(sptr);
 	}
 
 	// send any data to handlers
@@ -659,37 +663,41 @@ public:
 		};
 		auto sptr = std::make_shared<entry_t>();
 		sptr->data = obj;
+		sptr->level = level;
+		sptr->channel = channel;
+		sptr->source_file = nullptr;
+		sptr->source_line = 0;
+		sptr->time = std::chrono::system_clock::now();
 		sptr->writer = nullptr;
-		_publish(level, channel, sptr);
+		publish(sptr);
 	}
 
-	void write(int level, const char* channel, const std::string& obj)
+	void write(int level, const char* channel, const char* source_file, int source_line, const std::string& obj)
 	{
-		write(level, channel, "%s", obj);
+		write(level, channel, source_file, source_line, "%s", obj);
 	}
 
-	inline void write(int level, const char* channel, const char* cstr)
+	void write(int level, const char* channel, const char* source_file, int source_line, const std::wstring& obj)
 	{
-		write(level, channel, "%s", cstr);
+		write(level, channel, source_file, source_line, "%ws", obj);
 	}
 
-	inline const LogEvent* get_event(uint64_t seq) const
-	{
-		return m_event_queue + (seq & m_size_mask);
-	}
-
-	inline LogEvent* get_event(uint64_t seq)
+	const LogEvent* get_event(uint64_t seq) const
 	{
 		return m_event_queue + (seq & m_size_mask);
 	}
 
-	static void* operator new(size_t size);
-	static void operator delete(void* ptr);
-	static size_t get_next_power2(size_t val);
+	LogEvent* get_event(uint64_t seq)
+	{
+		return m_event_queue + (seq & m_size_mask);
+	}
+
+	void* operator new(size_t size);
+	void operator delete(void* ptr);
 
 private:
-	uint64_t _claim(uint64_t count);
-	void _publish(int level, const char* channel, std::shared_ptr<void> sptr);
+	uint64_t claim(uint64_t count);
+	void publish(std::shared_ptr<void>&& sptr);
 
 	LogEvent* m_event_queue;
 	size_t m_size_mask;
@@ -701,4 +709,4 @@ private:
 #ifdef USE_NAMESPACE
 }
 #endif
-#endif // NCLUDE_STB_LOG_H
+#endif // INCLUDE_STB_LOG_H

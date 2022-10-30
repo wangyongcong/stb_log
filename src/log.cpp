@@ -1,4 +1,6 @@
+#ifndef INCLUDE_STB_LOG_H
 #include "log.h"
+#endif
 #ifdef STB_LOG_IMPLEMENTATION
 #include <sys/stat.h>
 #include <cstdarg>
@@ -109,23 +111,24 @@ static void stblog_aligned_free(void *ptr) {
 	free(raw);
 }
 
-size_t CLogger::get_next_power2(size_t val) {
+// The smallest integral power of two that is not smaller than x.
+size_t bit_ceil(size_t x) {
 	// val maybe power of 2
-	--val;
+	--x;
 	// set the bits right of MSB to 1
-	val |= (val >> 1);
-	val |= (val >> 2);
-	val |= (val >> 4);
-	val |= (val >> 8);        /* Ok, since int >= 16 bits */
+	x |= (x >> 1);
+	x |= (x >> 2);
+	x |= (x >> 4);
+	x |= (x >> 8);        /* Ok, since int >= 16 bits */
 #if (SIZE_MAX != 0xffff)
-	val |= (val >> 16);        /* For 32 bit int systems */
+	x |= (x >> 16);        /* For 32 bit int systems */
 #if (SIZE_MAX > 0xffffffffUL)
-	val |= (val >> 32);        /* For 64 bit int systems */
+	x |= (x >> 32);        /* For 64 bit int systems */
 #endif // SIZE_MAX != 0xffff
 #endif // SIZE_MAX > 0xffffffffUL
-	++val;
-	assert((val & (val - 1)) == 0);
-	return val;
+	++x;
+	assert((x & (x - 1)) == 0);
+	return x;
 }
 
 // --------------------------------
@@ -143,7 +146,7 @@ void CLogger::operator delete(void* ptr) {
 CLogger::CLogger(size_t size) {
 	assert(size > 0);
 	if (size & (size - 1))
-		size = get_next_power2(size);
+		size = bit_ceil(size);
 	static_assert(sizeof(LogEvent) % CACHELINE_SIZE == 0, "LogEvent should be fit in cacheline.");
 	size_t buf_size = sizeof(LogEvent) * size;
 	m_event_queue = (LogEvent *) stblog_aligned_alloc(CACHELINE_SIZE, buf_size);
@@ -175,7 +178,7 @@ CLogger::~CLogger() {
 }
 
 
-uint64_t CLogger::_claim(uint64_t count) {
+uint64_t CLogger::claim(uint64_t count) {
 	uint64_t request_seq = m_seq_claim.fetch_add(count);
 	if (request_seq <= m_min_seq + m_size_mask) {
 		return request_seq;
@@ -218,14 +221,10 @@ uint64_t CLogger::_claim(uint64_t count) {
 	return request_seq;
 }
 
-void CLogger::_publish(int level, const char *channel, std::shared_ptr<void> sptr) {
-	LogData *base = (LogData*)sptr.get();
-	base->level = level;
-	base->channel = channel;
-	base->time = std::chrono::system_clock::now();
-	auto seq = _claim(1);
+void CLogger::publish(std::shared_ptr<void>&& sptr) {
+	auto seq = claim(1);
 	auto *log = get_event(seq);
-	log->data = sptr;
+	log->data = std::move(sptr);
 	log->publish.store(seq + 1);
 }
 
@@ -253,7 +252,7 @@ void CLogger::release_handlers() {
 }
 
 void CLogger::close() {
-	uint64_t seq = _claim(1);
+	uint64_t seq = claim(1);
 	LogEvent *log = get_event(seq);
 	log->data = nullptr;
 	log->publish.store(seq + 1);
@@ -354,7 +353,7 @@ const char *CMsTimeFormatter::format_time(LogEventTime t) {
 		return m_buf;
 	}
 	auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch());
-	sprintf(m_buf + len, ".%03d", int(msec.count() % 1000));
+	sprintf(m_buf + len, ".%03d", (int)(msec.count() % 1000));
 	return m_buf;
 }
 
@@ -373,13 +372,18 @@ const char *CDateTimeFormatter::format_time(LogEventTime t) {
 // --------------------------------
 
 void CLogStdout::process_event(const LogData *log) {
+	const char* stime = nullptr;
 	if (m_formatter) {
-		const char *stime = m_formatter->format_time(log->time);
-		printf("[%s] ", stime);
+		stime = m_formatter->format_time(log->time);
 	}
-	if (log->channel[0] != 0) {
-		printf("[%s] ", log->channel);
+	if(log->source_file)
+	{
+		if(stime) printf("[%s] ", stime);
+		if(log->channel) printf("[%s] ", log->channel);
+		printf("%s(%d)\n", log->source_file, log->source_line);
 	}
+	if(stime) printf("[%s] ", stime);
+	if(log->channel) printf("[%s] ", log->channel);
 	log->writer[LOG_WRITER_STDOUT](log, nullptr);
 	printf("\n");
 }
@@ -478,13 +482,18 @@ void CLogFile::flush()
 }
 
 void CLogFile::process_event(const LogData *log) {
+	const char* stime = nullptr;
 	if (m_formatter) {
-		const char *stime = m_formatter->format_time(log->time);
-		m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+		stime = m_formatter->format_time(log->time);
 	}
-	if (log->channel[0] != 0) {
-		m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
+	if(log->source_file)
+	{
+		if(stime) m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+		if(log->channel) m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
+		m_cur_size += fprintf(m_hfile, "%s(%d)\n", log->source_file, log->source_line);
 	}
+	if(stime) m_cur_size += fprintf(m_hfile, "[%s] ", stime);
+	if(log->channel) m_cur_size += fprintf(m_hfile, "[%s] ", log->channel);
 	std::pair<FILE*, long> context{m_hfile, 0};
 	log->writer[LOG_WRITER_FILE](log, &context);
 	m_cur_size += context.second + 1;
@@ -497,7 +506,7 @@ void CLogFile::process_event(const LogData *log) {
 void CLogFile::on_close() {
 	if (m_hfile) {
 		fclose(m_hfile);
-		m_hfile = 0;
+		m_hfile = nullptr;
 	}
 }
 
@@ -506,7 +515,7 @@ void CLogFile::rotate() {
 		return;
 	if (m_hfile) {
 		fclose(m_hfile);
-		m_hfile = 0;
+		m_hfile = nullptr;
 	}
 	std::string logfile, ext;
 	CLogFileSystem::split_ext(m_curfile, logfile, ext);
@@ -612,7 +621,7 @@ std::pair<char*, size_t> CLogString::getstr(size_t required_size)
 		}
 		if(size >= LOG_STRING_SIZE_MAX)
 			size = LOG_STRING_SIZE_MAX;
-		if(m_buf)
+		if(!m_buf)
 			delete [] m_buf;
 		m_buf = new char[size];
 		m_capacity = size;

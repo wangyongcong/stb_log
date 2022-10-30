@@ -167,11 +167,12 @@ void common_test()
 	const char *c = "const chars";
 	std::string s = "std::string";
 
-	logger->write(LOG_DEBUG, "DEBUG", "debug info: %d, %f, '%s', '%s', '%s'", i, f, c, s, "string literal");
-	logger->write(LOG_INFO, "INFO", "common message");
-	logger->write(LOG_WARNING, "WARNING", "it's a warning");
-	logger->write(LOG_ERROR, "ERROR", "it's an error");
-	logger->write(LOG_CRITICAL, "CRITICAL", "fatal error!");
+	logger->write(LOG_DEBUG, "DEBUG", __FILE__, __LINE__, 
+	"debug info: %d, %f, '%s', '%s', '%s'", i, f, c, s, "string literal");
+	logger->write(LOG_INFO, "INFO", __FILE__, __LINE__, "common message");
+	logger->write(LOG_WARNING, "WARNING", __FILE__, __LINE__, "it's a warning");
+	logger->write(LOG_ERROR, "ERROR", __FILE__, __LINE__, "it's an error");
+	logger->write(LOG_CRITICAL, "CRITICAL", __FILE__, __LINE__, "fatal error!");
 
 	// close and exit
 	logger->close();
@@ -221,6 +222,10 @@ void usage_test()
 	float f = 3.1415926f;
 	const char *c = "const chars";
 	std::string s = "std::string";
+
+	log_info("simple string literal");
+	log_info(std::string("simple string"));
+	log_info(std::wstring(L"simple wide string"));
 
 	log_write(LOG_INFO, "TEST", "current log sevirity level is [%d]", log_severity_level);
 	log_debug("debug message: %d, %f, '%s', '%s'", i, f, c, s);
@@ -290,7 +295,7 @@ int main(int args, char *argv[])
 	thread_test();
 	// file_rotate_test();
 	common_test();
-	// usage_test();
+	usage_test();
 	type_trait_test();
 	return 0;
 }
